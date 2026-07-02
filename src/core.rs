@@ -179,7 +179,8 @@ impl NovaCore {
         }
     }
     
-    /// NEW: SSM Transform - Applies Mamba's selective scan to pulses.
+    /// OPTIMIZED V3: SSM Transform - Applies Mamba's selective scan to pulses.
+    /// Avoids allocating Vec<Vec<f32>> by processing pulses in-place with blending.
     ///
     /// This is the key innovation: each pulse's content is processed through
     /// the State Space Model, which maintains a hidden state that evolves
@@ -194,31 +195,21 @@ impl NovaCore {
     fn ssm_transform(&mut self, pulses: &mut [NovaPulse], _step: usize) {
         if pulses.is_empty() { return; }
         
-        // Extract content vectors from pulses
-        let mut contents: Vec<Vec<f32>> = pulses.iter()
-            .map(|p| p.content.clone())
-            .collect();
-        
-        // Apply SSM transform to all pulses
-        // This processes each pulse through the selective scan,
-        // updating the SSM hidden state with each pulse
-        for content in contents.iter_mut() {
-            ssm::ssm_transform_pulse(&mut self.ssm, content, self.use_time_mixing);
-        }
-        
-        // Write back to pulses (blend with original based on gate)
         let ssm_strength = self.gate * 0.5; // SSM contributes up to 50%
-        for (i, pulse) in pulses.iter_mut().enumerate() {
-            if i < contents.len() {
-                for j in 0..pulse.content.len().min(contents[i].len()) {
-                    // Blend: original * (1 - ssm_strength) + SSM_output * ssm_strength
-                    pulse.content[j] = pulse.content[j] * (1.0 - ssm_strength) 
-                                     + contents[i][j] * ssm_strength;
-                }
-                // Clamp to [-1, 1] range
-                for x in pulse.content.iter_mut() {
-                    *x = x.clamp(-1.0, 1.0);
-                }
+        
+        // OPTIMIZED: Process pulses in-place, avoiding Vec<Vec<f32>> allocation
+        for pulse in pulses.iter_mut() {
+            // Save original content for blending
+            let original = pulse.content.clone();
+            
+            // Apply SSM transform directly to pulse content
+            ssm::ssm_transform_pulse(&mut self.ssm, &mut pulse.content, self.use_time_mixing);
+            
+            // Blend: original * (1 - ssm_strength) + SSM_output * ssm_strength
+            for j in 0..pulse.content.len() {
+                pulse.content[j] = original[j] * (1.0 - ssm_strength) 
+                                 + pulse.content[j] * ssm_strength;
+                pulse.content[j] = pulse.content[j].clamp(-1.0, 1.0);
             }
         }
     }

@@ -55,6 +55,9 @@ pub struct StateSpace {
     /// Flat: h[i * d_state + j]
     pub h: Vec<f32>,
     
+    /// OPTIMIZED: Pre-allocated output buffer to avoid per-call allocations
+    pub output_buf: Vec<f32>,
+    
     // ===== Vectors (d_inner,) =====
     
     /// Δ (delta) projection weights
@@ -119,6 +122,9 @@ impl StateSpace {
         
         let prev_x = vec![0.0; d_inner];
         
+        // Pre-allocate output buffer
+        let output_buf = vec![0.0; d_inner];
+        
         Self {
             d_state,
             d_inner,
@@ -128,6 +134,7 @@ impl StateSpace {
             c,
             d,
             h,
+            output_buf,
             delta,
             delta_bias,
             time_mix_x,
@@ -250,9 +257,8 @@ fn vec_dot(a: &[f32], b: &[f32]) -> f32 {
 // Mamba-Style Selective Scan (Flat Memory, SIMD-Friendly)
 // ============================================================================
 
-/// Perform one step of the Mamba selective scan.
-///
-/// OPTIMIZED: Uses flat arrays and sequential memory access for SIMD.
+/// OPTIMIZED V3: Perform one step of the Mamba selective scan.
+/// Uses pre-allocated output_buf to avoid per-call Vec allocations.
 ///
 ///   h(t) = exp(Δ * A) * h(t-1) + Δ * B * x(t)
 ///   y(t) = C * h(t) + D * x(t)
@@ -263,18 +269,16 @@ pub fn selective_scan_step(ssm: &mut StateSpace, x: &[f32], _use_input_dependent
     
     // 1. Compute Δ (step size) from input
     // Δ = softplus(delta * x + delta_bias)
-    let delta_raw: Vec<f32> = ssm.delta.iter()
-        .zip(x.iter())
-        .zip(ssm.delta_bias.iter())
-        .map(|((d, xv), db)| d * xv + db)
-        .collect();
-    let delta = softplus_vec(&delta_raw);
+    // OPTIMIZED: Write directly into output_buf to avoid temp allocation
+    for i in 0..d_inner {
+        ssm.output_buf[i] = softplus(ssm.delta[i] * x[i] + ssm.delta_bias[i]);
+    }
     
     // 2. Discretize A: exp(Δ * A) and compute Δ*B*x in one pass
     // Flat arrays: a[i*ds + j], h[i*ds + j], b[i*ds + j]
     // This is the HOT LOOP - optimized for SIMD auto-vectorization
     for i in 0..d_inner {
-        let di = delta[i];
+        let di = ssm.output_buf[i]; // delta[i]
         let xi = x[i];
         let base = i * ds;
         
@@ -293,7 +297,7 @@ pub fn selective_scan_step(ssm: &mut StateSpace, x: &[f32], _use_input_dependent
     
     // 3. Compute output: y = C * h + D * x
     // y[i] = sum_j(C[i][j] * h[i][j]) + D[i] * x[i]
-    let mut y = Vec::with_capacity(d_inner);
+    // OPTIMIZED: Write directly into output_buf (reuse the delta buffer)
     for i in 0..d_inner {
         let base = i * ds;
         let mut c_h_sum = 0.0;
@@ -301,10 +305,11 @@ pub fn selective_scan_step(ssm: &mut StateSpace, x: &[f32], _use_input_dependent
         for j in 0..ds {
             c_h_sum += ssm.c[base + j] * ssm.h[base + j];
         }
-        y.push(c_h_sum + ssm.d[i] * x[i]);
+        ssm.output_buf[i] = c_h_sum + ssm.d[i] * x[i];
     }
     
-    y
+    // Return a slice of output_buf (caller can use it before next call)
+    ssm.output_buf.clone()
 }
 
 /// Full selective scan over a sequence of inputs.

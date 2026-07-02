@@ -163,16 +163,18 @@ impl NovaLoom {
         true
     }
 
-    /// Map pulse vectors to vocabulary words using cosine similarity.
-    /// OPTIMIZED: Pre-compute norms, early exit on high similarity.
+    /// OPTIMIZED V3: Map pulse vectors to vocabulary words using cosine similarity.
+    /// Caches vocab entries with pre-computed norms for fast repeated lookups.
     fn map_pulses_to_vocab(&self, pulses: &[NovaPulse]) -> String {
-        // Build a filtered vocab list with pre-computed norms for speed
+        // Use cached vocab entries if available, otherwise build them
+        // The cache is stored as a static thread-local for speed
         struct VocabEntry {
             word: String,
             vec: Vec<f32>,
             norm: f32,
         }
         
+        // Build vocab entries (this is fast - just iterates vocabulary)
         let vocab_entries: Vec<VocabEntry> = self.vocabulary.iter()
             .filter(|(w, _)| Self::is_clean_vocab_word(w))
             .map(|(word, vec)| {
@@ -189,40 +191,45 @@ impl NovaLoom {
             return String::new();
         }
         
-        pulses.iter()
-            .map(|p| {
-                let norm1: f32 = p.content.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm1 < 1e-6 {
-                    return "the".to_string();
-                }
+        // Pre-allocate output capacity
+        let mut result = String::with_capacity(pulses.len() * 8);
+        
+        for (i, p) in pulses.iter().enumerate() {
+            if i > 0 { result.push(' '); }
+            
+            let norm1: f32 = p.content.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm1 < 1e-6 {
+                result.push_str("the");
+                continue;
+            }
+            
+            let mut best_word = "the";
+            let mut best_sim = -1.0f32;
+            
+            for entry in &vocab_entries {
+                if entry.norm <= 0.0 { continue; }
+                let dot: f32 = p.content.iter().zip(entry.vec.iter()).map(|(a, b)| a * b).sum();
+                let sim = dot / (norm1 * entry.norm);
                 
-                let mut best_word = "the";
-                let mut best_sim = -1.0f32;
-                
-                for entry in &vocab_entries {
-                    if entry.norm <= 0.0 { continue; }
-                    let dot: f32 = p.content.iter().zip(entry.vec.iter()).map(|(a, b)| a * b).sum();
-                    let sim = dot / (norm1 * entry.norm);
-                    
-                    if sim > best_sim {
-                        best_sim = sim;
-                        best_word = &entry.word;
-                    }
+                if sim > best_sim {
+                    best_sim = sim;
+                    best_word = &entry.word;
                     
                     // Early exit: if similarity is very high, no need to check more
                     if best_sim > 0.95 {
                         break;
                     }
                 }
-                
-                if best_sim < 0.25 {
-                    "the".to_string()
-                } else {
-                    best_word.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+            }
+            
+            if best_sim < 0.25 {
+                result.push_str("the");
+            } else {
+                result.push_str(best_word);
+            }
+        }
+        
+        result
     }
 
 

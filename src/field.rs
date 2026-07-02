@@ -189,6 +189,12 @@ impl NovaField {
         &mut self.momentum
     }
 
+    /// OPTIMIZED: Get mutable references to both state and momentum simultaneously.
+    /// This avoids the borrow checker issue when both are needed at once.
+    pub fn state_and_momentum_mut(&mut self) -> (&mut [f32], &mut [f32]) {
+        (&mut self.state, &mut self.momentum)
+    }
+
     /// Get field energy (measure of information content)
     pub fn energy(&self) -> f32 {
         self.state.iter().map(|&x| x * x).sum::<f32>().sqrt()
