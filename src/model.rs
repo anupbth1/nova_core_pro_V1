@@ -82,14 +82,14 @@ pub struct CoreSnapshot {
     pub memory: Vec<f32>,
     pub internal_state: Vec<f32>,
     pub gate: f32,
-    /// SSM parameters for this core
+    /// SSM parameters for this core (flat memory layout)
     pub ssm_delta: Vec<f32>,
     pub ssm_delta_bias: Vec<f32>,
-    pub ssm_a_log: Vec<Vec<f32>>,
-    pub ssm_b: Vec<Vec<f32>>,
-    pub ssm_c: Vec<Vec<f32>>,
+    pub ssm_a_log: Vec<f32>,
+    pub ssm_b: Vec<f32>,
+    pub ssm_c: Vec<f32>,
     pub ssm_d: Vec<f32>,
-    pub ssm_h: Vec<Vec<f32>>,
+    pub ssm_h: Vec<f32>,
     pub ssm_time_mix_x: Vec<f32>,
     pub ssm_time_mix_w: Vec<f32>,
     pub ssm_time_mix_key: Vec<f32>,
@@ -295,14 +295,9 @@ impl NovaModelManager {
                         core_snap.ssm_c.clone(),
                         core_snap.ssm_d.clone(),
                     );
-                    // Restore hidden state
+                    // Restore hidden state (flat memory layout)
                     if core_snap.ssm_h.len() == loom.cores[i].ssm.h.len() {
-                        for j in 0..loom.cores[i].ssm.h.len() {
-                            if j < core_snap.ssm_h.len() {
-                                let len = loom.cores[i].ssm.h[j].len().min(core_snap.ssm_h[j].len());
-                                loom.cores[i].ssm.h[j][..len].copy_from_slice(&core_snap.ssm_h[j][..len]);
-                            }
-                        }
+                        loom.cores[i].ssm.h.copy_from_slice(&core_snap.ssm_h);
                     }
                     // Restore time-mix parameters
                     if core_snap.ssm_time_mix_x.len() == loom.cores[i].ssm.d_inner {

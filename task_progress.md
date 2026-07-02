@@ -15,6 +15,7 @@
 - [ ] 10. Add timing information
 
 ## Phase 3: 🐙 GitHub Upload
-- [ ] 11. Create .gitignore
-- [ ] 12. Update README.md
-- [ ] 13. Initialize git repo & push
+- [x] 11. Create .gitignore
+- [x] 12. Update README.md
+- [x] 13. Initialize git repo & commit
+- [x] 14. Push to GitHub (https://github.com/anupbth1/nova_core_pro_V1.git)

@@ -34,6 +34,11 @@ regex-lite = "0.1"
 opt-level = 3          # Maximum optimization
 lto = true             # Link-time optimization
 codegen-units = 1      # Better optimization
+# Auto-vectorization with SIMD (AVX2, FMA, SSE4.2)
+# NOTE: For SIMD, build with: RUSTFLAGS="-C target-cpu=native" cargo build --release
+# Or create .cargo/config.toml with:
+#   [build]
+#   rustflags = ["-C", "target-cpu=native"]
 
 [profile.dev]
 opt-level = 0          # Fast compilation for development

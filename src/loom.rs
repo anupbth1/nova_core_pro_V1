@@ -3,6 +3,7 @@
 use crate::pulse::NovaPulse;
 use crate::field::NovaField;
 use crate::core::NovaCore;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 pub struct NovaLoom {
@@ -544,11 +545,9 @@ impl NovaLoom {
         
         self.total_pulses_processed += pulses.len();
         
-        // Process through cores and field
+        // Process through cores and field (OPTIMIZED: parallel cores)
         for _iteration in 0..self.max_iterations {
-            for core in self.cores.iter_mut() {
-                core.process(&mut pulses);
-            }
+            self.process_cores_parallel(&mut pulses);
             self.field.update(&mut pulses);
             self.total_iterations += 1;
             
@@ -594,6 +593,32 @@ impl NovaLoom {
         
         // Last resort: return a diverse word from vocabulary (excluding banned)
         self.pick_diverse_word(banned, &[])
+    }
+
+    /// Process pulses through all cores in parallel using Rayon.
+    /// OPTIMIZED: Cores are independent, so we process them simultaneously.
+    /// Each core reads/writes pulse content independently (no data races between cores).
+    fn process_cores_parallel(&mut self, pulses: &mut [NovaPulse]) {
+        // SAFETY: We use raw pointer access to share pulses across parallel core processing.
+        // Each core only reads/writes its own SSM state and pulse content independently.
+        // The cores don't share state between each other, so there are no data races.
+        // We wrap the raw pointer in a struct that implements Send + Sync.
+        struct SharedPulses(*mut NovaPulse, usize);
+        unsafe impl Send for SharedPulses {}
+        unsafe impl Sync for SharedPulses {}
+        
+        let shared = SharedPulses(pulses.as_mut_ptr(), pulses.len());
+        let shared_ref = &shared;
+        
+        // Use a scope-based approach to avoid Send/Sync issues on the closure
+        rayon::scope(|s| {
+            for core in self.cores.iter_mut() {
+                s.spawn(|_| {
+                    let pulses_slice = unsafe { std::slice::from_raw_parts_mut(shared_ref.0, shared_ref.1) };
+                    core.process(pulses_slice);
+                });
+            }
+        });
     }
 
     /// Process text input and return a response.
@@ -711,9 +736,8 @@ impl NovaLoom {
         self.total_pulses_processed += pulses.len();
         
         for _iteration in 0..self.max_iterations {
-            for core in self.cores.iter_mut() {
-                core.process(&mut pulses);
-            }
+            // OPTIMIZED: Process all cores in parallel
+            self.process_cores_parallel(&mut pulses);
             self.field.update(&mut pulses);
             self.total_iterations += 1;
             

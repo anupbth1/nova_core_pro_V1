@@ -227,17 +227,18 @@ impl NovaCore {
         if pulses.is_empty() || self.internal_state.is_empty() { return; }
         
         // Enhanced internal state update using SSM-aware averaging
-        // Instead of just tracking first element, use SSM hidden state
+        // OPTIMIZED: Uses flat SSM memory layout (h[i * d_state + j])
         if self.use_ssm {
-            // Aggregate SSM hidden state into internal_state
             let d_inner = self.ssm.d_inner;
             let d_state = self.ssm.d_state;
             let state_len = self.internal_state.len().min(d_inner);
+            let ds = d_state;
             
             for i in 0..state_len {
+                let base = i * ds;
                 let mut h_sum = 0.0;
-                for j in 0..d_state.min(4) { // Use first 4 state dims for efficiency
-                    h_sum += self.ssm.h[i][j];
+                for j in 0..ds.min(4) { // Use first 4 state dims for efficiency
+                    h_sum += self.ssm.h[base + j];
                 }
                 self.internal_state[i] = self.internal_state[i] * 0.9 + (h_sum / 4.0) * 0.1;
             }
