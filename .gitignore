@@ -1,0 +1,45 @@
+# Rust build artifacts
+target/
+target_colab/
+target_release/
+**/*.rs.bk
+
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Model files
+*.safetensors
+*.nova
+models/*.nova
+!models/shakespeare-single.nova
+!models/shakespeare-v2.nova
+models - Copy/
+
+# Temp/backup directories
+temp/
+backup/
+
+# Data files
+data.json
+data.jsonl
+*.jsonl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Colab notebooks (keep in repo but ignore local changes)
+*.ipynb_checkpoints/
+
+# Logs
+*.log

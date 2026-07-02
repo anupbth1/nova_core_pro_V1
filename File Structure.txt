@@ -1,0 +1,30 @@
+nova_core/                          # Root folder (aap banayenge)
+│
+├── Cargo.toml                      # Project configuration
+├── Cargo.lock                      # Auto-generated (don't edit)
+│
+├── src/                            # All source code
+│   ├── main.rs                     # CLI entry point (runs everything)
+│   ├── pulse.rs                    # NovaPulse (instead of tokens)
+│   ├── field.rs                    # NovaField (instead of attention)
+│   ├── core.rs                     # NovaCore (adaptive processors)
+│   ├── loom.rs                     # NovaLoom (main engine)
+│   └── benchmark.rs                # NovaCore benchmark tasks
+│
+├── tests/                          # Test files (optional)
+│   └── integration_tests.rs
+│
+├── benches/                        # Performance benchmarks
+│   └── speed.rs
+│
+├── examples/                       # Example usage
+│   ├── basic.rs
+│   └── chat.rs
+│
+├── target/                         # Compiled binaries (auto-generated)
+│   └── release/
+│       └── nova_core.exe (or nova_core on Linux/macOS)
+│
+├── .gitignore                      # Git ignore file
+├── README.md                       # Project documentation
+└── run.sh (or run.bat for Windows) # Quick run script
