@@ -400,10 +400,12 @@ fn trim_to_sentence(text: &str, max_words: usize) -> String {
 }
 
 fn main() {
-    // Initialize global thread pool with auto-detected optimal thread count
-    init_global_thread_pool();
-    
     let cli = Cli::parse();
+    
+    // Initialize global thread pool with user-requested core count
+    // If --cores 0 is passed, auto-detects from available CPU cores
+    init_global_thread_pool(cli.cores);
+    
     let mut nova = NovaLoom::new(cli.dim, cli.cores);
     
     match cli.command {

@@ -36,19 +36,19 @@ pub fn auto_detect_batch_size() -> usize {
     (threads * 2).min(64).max(4)
 }
 
-/// Initialize the global Rayon thread pool with optimal thread count.
+/// Initialize the global Rayon thread pool with specified thread count.
+/// If threads=0, auto-detects optimal count from available CPU cores.
 /// Call this once at startup for maximum performance.
-pub fn init_global_thread_pool() {
-    let threads = auto_detect_threads();
-    let pool = rayon::ThreadPoolBuilder::new()
+pub fn init_global_thread_pool(threads: usize) {
+    let threads = if threads == 0 {
+        auto_detect_threads()
+    } else {
+        threads
+    };
+    let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global();
-    match pool {
-        Ok(()) => eprintln!("  ⚡ Auto-detected {} CPU cores, using {} threads", 
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
-            threads),
-        Err(_) => {} // Pool already initialized
-    }
+    eprintln!("  ⚡ Using {} Rayon threads", threads);
 }
 
 /// Training example with input and expected output
