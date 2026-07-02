@@ -159,6 +159,10 @@ enum Commands {
         #[arg(long, default_value = "false")]
         ultra: bool,
 
+        /// NEURAL mode: actually train through cores + field (slower but real learning)
+        #[arg(long, default_value = "false")]
+        neural: bool,
+
         /// Model name to save after training
         #[arg(short = 'n', long, default_value = "hf-trained-model")]
         model_name: String,
@@ -200,6 +204,10 @@ enum Commands {
         /// ULTRA-FAST mode: skip core iterations, direct pattern learning (100x faster)
         #[arg(long, default_value = "false")]
         ultra: bool,
+
+        /// NEURAL mode: actually train through cores + field (slower but real learning)
+        #[arg(long, default_value = "false")]
+        neural: bool,
 
         /// Model name to save after training
         #[arg(short = 'n', long, default_value = "multi-hf-trained-model")]
@@ -872,7 +880,7 @@ fn main() {
 
         // ===== NEW: HF Train Command =====
 
-        Commands::HfTrain { dataset: ds_name, subset, split, input_col, target_col, extra_cols, template, max_rows, pro, ultra, model_name } => {
+        Commands::HfTrain { dataset: ds_name, subset, split, input_col, target_col, extra_cols, template, max_rows, pro, ultra, neural, model_name } => {
 
             print_header(&nova);
             println!("{}", "═".repeat(60));
@@ -940,7 +948,9 @@ fn main() {
             println!("\n🎯 Step 3: Training model (single pass)...");
             let mut trainer = NovaTrainer::new();
             
-            if ultra {
+            if neural {
+                trainer.train_neural(&mut nova, &train_data);
+            } else if ultra {
                 trainer.train_one_pass_ultra(&mut nova, &train_data);
             } else {
                 trainer.train_one_pass(&mut nova, &train_data);
@@ -973,7 +983,7 @@ fn main() {
 
         // ===== NEW: Multi-HF Train Command =====
 
-        Commands::MultiHfTrain { datasets, split, input_col, target_col, template, max_rows, pro, ultra, model_name } => {
+        Commands::MultiHfTrain { datasets, split, input_col, target_col, template, max_rows, pro, ultra, neural, model_name } => {
             print_header(&nova);
             println!("{}", "═".repeat(60));
             if pro {
@@ -1042,7 +1052,9 @@ fn main() {
 
                 // Step 2: Train the model on this dataset (single pass)
                 println!("🎯 Training on '{}'...", ds_name);
-                if ultra {
+                if neural {
+                    trainer.train_neural(&mut nova, &dataset.examples);
+                } else if ultra {
                     trainer.train_one_pass_ultra(&mut nova, &dataset.examples);
                 } else {
                     trainer.train_one_pass(&mut nova, &dataset.examples);

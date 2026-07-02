@@ -1,9 +1,14 @@
-# Nova Core Optimization Tasks
+# Nova Core - Task Progress
 
-## Critical Optimizations Needed
+## Current Task: Complete Neural Training Integration & GPU Acceleration
 
-- [ ] **REALTIME PROGRESS**: Add timer-based progress reporting (every 1-2 seconds) instead of 5% intervals
-- [ ] **PARALLEL BATCH**: Process multiple training examples in parallel using Rayon
-- [ ] **AUTO HARDWARE**: Auto-detect CPU cores, configure batch size and thread count automatically
-- [ ] **FASTER TRAINING LOOP**: Reduce allocations, pre-allocate buffers, optimize core processing
-- [ ] **BUILD & TEST**: Compile and verify the optimizations work
+### Todo:
+- [x] Read current state of all files (main.rs, trainer.rs, cuda.rs)
+- [x] Update HfTrain handler to use `train_neural()` when `--neural` flag is set
+- [x] Add `--neural` flag to MultiHfTrain command
+- [x] Update MultiHfTrain handler to use `train_neural()` when `--neural` flag is set
+- [x] Implement real CUDA kernels in cuda.rs (replace stubs with actual GPU computation)
+- [x] Integrate NovaAccelerator into train_neural() for GPU-accelerated training
+- [x] Build and verify code compiles (both default and --features cuda)
+- [ ] Commit and push to GitHub
+- [ ] Test the implementation

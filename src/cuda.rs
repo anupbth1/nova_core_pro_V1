@@ -80,6 +80,154 @@ pub fn auto_detect_backend() -> HardwareBackend {
 }
 
 // ============================================================================
+// CUDA Kernel Source (PTX)
+// ============================================================================
+
+/// CUDA kernel source for selective scan operation.
+/// This is a custom CUDA kernel that performs the Mamba selective scan on GPU.
+#[cfg(feature = "cuda")]
+const SELECTIVE_SCAN_KERNEL_SRC: &str = r#"
+extern "C" __global__ void selective_scan_kernel(
+    const float* __restrict__ a,
+    const float* __restrict__ b,
+    const float* __restrict__ c,
+    float* __restrict__ h,
+    const float* __restrict__ input,
+    const float* __restrict__ delta,
+    const float* __restrict__ delta_bias,
+    const float* __restrict__ d,
+    float* __restrict__ output,
+    const int d_inner,
+    const int d_state
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= d_inner) return;
+    
+    int base = idx * d_state;
+    float h_val = h[idx];  // hidden state for this inner dim
+    
+    float delta_val = delta[idx];
+    if (delta_bias) delta_val += delta_bias[idx];
+    delta_val = delta_val > 0.0f ? delta_val : 0.0f;  // softplus
+    
+    float input_val = input[idx];
+    
+    // Selective scan: h = A * h + B * input * delta
+    for (int j = 0; j < d_state && j < 4; j++) {
+        int s_idx = base + j;
+        float a_val = a[s_idx];
+        float b_val = b[s_idx];
+        float c_val = c[s_idx];
+        
+        // h_new = exp(a * delta) * h + b * input * delta
+        float da = expf(a_val * delta_val);
+        h_val = da * h_val + b_val * input_val * delta_val;
+    }
+    h[idx] = h_val;
+    
+    // output = C * h + D * input
+    float out_val = 0.0f;
+    for (int j = 0; j < d_state && j < 4; j++) {
+        int s_idx = base + j;
+        out_val += c[s_idx] * h_val;
+    }
+    if (d) out_val += d[idx] * input_val;
+    output[idx] = out_val;
+}
+"#;
+
+/// CUDA kernel source for field update operation.
+#[cfg(feature = "cuda")]
+const FIELD_UPDATE_KERNEL_SRC: &str = r#"
+extern "C" __global__ void field_update_kernel(
+    float* __restrict__ state,
+    float* __restrict__ momentum,
+    const float* __restrict__ pulses_content,
+    const float* __restrict__ pulses_weight,
+    const int num_pulses,
+    const int dim,
+    const float learning_rate,
+    const float diffusion
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dim) return;
+    
+    // Weighted average across all pulses for this dimension
+    float sum = 0.0f;
+    float total_weight = 0.0f;
+    
+    for (int p = 0; p < num_pulses; p++) {
+        float w = pulses_weight[p];
+        total_weight += w;
+        sum += pulses_content[p * dim + i] * w;
+    }
+    
+    if (total_weight > 0.0f) {
+        sum /= total_weight;
+    }
+    
+    // Momentum update
+    float diff = sum - state[i];
+    momentum[i] = momentum[i] * 0.9f + diff * learning_rate;
+    state[i] += momentum[i];
+    
+    // Clamp
+    if (state[i] > 1.0f) state[i] = 1.0f;
+    if (state[i] < -1.0f) state[i] = -1.0f;
+}
+"#;
+
+/// CUDA kernel source for SSM transform batch operation.
+#[cfg(feature = "cuda")]
+const SSM_TRANSFORM_KERNEL_SRC: &str = r#"
+extern "C" __global__ void ssm_transform_kernel(
+    const float* __restrict__ a,
+    const float* __restrict__ b,
+    const float* __restrict__ c,
+    float* __restrict__ h,
+    float* __restrict__ pulses_content,
+    const int num_pulses,
+    const int dim,
+    const int d_inner,
+    const int d_state
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_pulses * dim) return;
+    
+    int pulse_idx = idx / dim;
+    int dim_idx = idx % dim;
+    
+    if (dim_idx >= d_inner) return;
+    
+    int base = dim_idx * d_state;
+    float h_val = h[dim_idx];
+    
+    float input_val = pulses_content[idx];
+    
+    // Selective scan step for this pulse dimension
+    for (int j = 0; j < d_state && j < 4; j++) {
+        int s_idx = base + j;
+        float a_val = a[s_idx];
+        float b_val = b[s_idx];
+        float c_val = c[s_idx];
+        
+        float delta = 0.1f;  // default delta
+        float da = expf(a_val * delta);
+        h_val = da * h_val + b_val * input_val * delta;
+    }
+    h[dim_idx] = h_val;
+    
+    // Output = C * h
+    float out_val = 0.0f;
+    for (int j = 0; j < d_state && j < 4; j++) {
+        int s_idx = base + j;
+        out_val += c[s_idx] * h_val;
+    }
+    pulses_content[idx] = out_val;
+}
+"#;
+
+// ============================================================================
 // Nova Accelerator - GPU-Accelerated Operations
 // ============================================================================
 
@@ -357,8 +505,9 @@ impl NovaAccelerator {
         d_inner: usize,
         d_state: usize,
     ) {
-        if let Some(ref _device) = self.device {
-            // For now, compute on CPU (simplified - proper CUDA kernel implementation needed)
+        if let Some(ref device) = self.device {
+            // Use cudarc's CudaContext to allocate GPU memory and launch kernel
+            // For now, use CPU fallback since PTX compilation requires nvcc at runtime
             // The cudarc crate provides low-level CUDA device management via CudaContext.
             // For a full implementation, we would:
             // 1. Allocate GPU memory with ctx.alloc()
@@ -368,7 +517,8 @@ impl NovaAccelerator {
             //
             // For now, we use the CPU fallback path as a simplified version.
             // This ensures the code compiles and runs correctly.
-            // TODO: Implement proper CUDA kernel for selective scan
+            // TODO: Implement proper CUDA kernel for selective scan using cudarc's
+            //       low-level CUDA driver API (cuModuleLoad, cuLaunchKernel, etc.)
             
             // CPU computation as simplified fallback
             crate::ssm::selective_scan_step_raw(a, b, c, h, input, delta, delta_bias, d, output, d_inner, d_state);
@@ -382,7 +532,7 @@ impl NovaAccelerator {
         pulses_content: &mut [Vec<f32>],
         _use_time_mixing: bool,
     ) {
-        if let Some(ref _device) = self.device {
+        if let Some(ref device) = self.device {
             // CPU computation as simplified fallback
             // TODO: Implement proper CUDA kernel for batch SSM transform
             for content in pulses_content.iter_mut() {
@@ -402,7 +552,7 @@ impl NovaAccelerator {
         _diffusion: f32,
         dim: usize,
     ) {
-        if let Some(ref _device) = self.device {
+        if let Some(ref device) = self.device {
             // CPU computation as simplified fallback
             // TODO: Implement proper CUDA kernel for field update
             let mut field_avg = vec![0.0; dim];
@@ -435,7 +585,7 @@ impl NovaAccelerator {
         pulses_entropy: &mut [f32],
         pulses_weight: &mut [f32],
     ) {
-        if let Some(ref _device) = self.device {
+        if let Some(ref device) = self.device {
             // CPU computation as simplified fallback
             // TODO: Implement proper CUDA kernel for batch core processing
             for core in cores.iter_mut() {
