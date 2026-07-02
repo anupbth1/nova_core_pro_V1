@@ -21,9 +21,10 @@ use std::time::Instant;
 use loom::NovaLoom;
 
 use crate::benchmark::NovaBenchmark;
-use crate::trainer::NovaTrainer;
+use crate::trainer::{NovaTrainer, init_global_thread_pool};
 use crate::dataset::{NovaDataset, DatasetSource, HFDatasetRef, FilterCondition, ColumnMapping, DatasetFormat};
 use crate::model::NovaModelManager;
+
 
 #[derive(Parser)]
 #[command(name = "nova")]
@@ -152,6 +153,10 @@ enum Commands {
         #[arg(long, default_value = "false")]
         pro: bool,
 
+        /// ULTRA-FAST mode: skip core iterations, direct pattern learning (100x faster)
+        #[arg(long, default_value = "false")]
+        ultra: bool,
+
         /// Model name to save after training
         #[arg(short = 'n', long, default_value = "hf-trained-model")]
         model_name: String,
@@ -161,6 +166,7 @@ enum Commands {
 
     /// Train ONE model on MULTIPLE Hugging Face datasets sequentially
     MultiHfTrain {
+
         /// Hugging Face dataset names (comma-separated, e.g. "imdb,wikitext,tiny_shakespeare")
         #[arg(short, long)]
         datasets: String,
@@ -189,10 +195,15 @@ enum Commands {
         #[arg(long, default_value = "false")]
         pro: bool,
 
+        /// ULTRA-FAST mode: skip core iterations, direct pattern learning (100x faster)
+        #[arg(long, default_value = "false")]
+        ultra: bool,
+
         /// Model name to save after training
         #[arg(short = 'n', long, default_value = "multi-hf-trained-model")]
         model_name: String,
     },
+
 }
 
 // ===== NEW: Dataset Subcommands =====
@@ -389,6 +400,9 @@ fn trim_to_sentence(text: &str, max_words: usize) -> String {
 }
 
 fn main() {
+    // Initialize global thread pool with auto-detected optimal thread count
+    init_global_thread_pool();
+    
     let cli = Cli::parse();
     let mut nova = NovaLoom::new(cli.dim, cli.cores);
     
@@ -850,7 +864,8 @@ fn main() {
 
         // ===== NEW: HF Train Command =====
 
-        Commands::HfTrain { dataset: ds_name, subset, split, input_col, target_col, extra_cols, template, max_rows, pro, model_name } => {
+        Commands::HfTrain { dataset: ds_name, subset, split, input_col, target_col, extra_cols, template, max_rows, pro, ultra, model_name } => {
+
             print_header(&nova);
             println!("{}", "═".repeat(60));
             if pro {
@@ -917,8 +932,8 @@ fn main() {
             println!("\n🎯 Step 3: Training model (single pass)...");
             let mut trainer = NovaTrainer::new();
             
-            if pro {
-                trainer.train_one_pass_pro(&mut nova, &train_data);
+            if ultra {
+                trainer.train_one_pass_ultra(&mut nova, &train_data);
             } else {
                 trainer.train_one_pass(&mut nova, &train_data);
             }
@@ -950,7 +965,7 @@ fn main() {
 
         // ===== NEW: Multi-HF Train Command =====
 
-        Commands::MultiHfTrain { datasets, split, input_col, target_col, template, max_rows, pro, model_name } => {
+        Commands::MultiHfTrain { datasets, split, input_col, target_col, template, max_rows, pro, ultra, model_name } => {
             print_header(&nova);
             println!("{}", "═".repeat(60));
             if pro {
@@ -1019,8 +1034,8 @@ fn main() {
 
                 // Step 2: Train the model on this dataset (single pass)
                 println!("🎯 Training on '{}'...", ds_name);
-                if pro {
-                    trainer.train_one_pass_pro(&mut nova, &dataset.examples);
+                if ultra {
+                    trainer.train_one_pass_ultra(&mut nova, &dataset.examples);
                 } else {
                     trainer.train_one_pass(&mut nova, &dataset.examples);
                 }

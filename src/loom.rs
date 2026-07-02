@@ -598,7 +598,9 @@ impl NovaLoom {
     /// Process pulses through all cores in parallel using Rayon.
     /// OPTIMIZED: Cores are independent, so we process them simultaneously.
     /// Each core reads/writes pulse content independently (no data races between cores).
-    fn process_cores_parallel(&mut self, pulses: &mut [NovaPulse]) {
+    /// Made `pub` so trainer can call it directly.
+    pub fn process_cores_parallel(&mut self, pulses: &mut [NovaPulse]) {
+
         // SAFETY: We use raw pointer access to share pulses across parallel core processing.
         // Each core only reads/writes its own SSM state and pulse content independently.
         // The cores don't share state between each other, so there are no data races.
