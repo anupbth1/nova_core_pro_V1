@@ -547,7 +547,7 @@ impl NovaTrainer {
         println!("  Mode:     Direct pattern learning (no core iterations)");
         println!("  Learning rate: {:.4}", self.learning_rate);
         println!("  Vocabulary: {} words", self.vocab_forward.len());
-        println!("  Threads: {} (auto-detected)", auto_detect_threads());
+        println!("  Threads: {} (Rayon pool)", rayon::current_num_threads());
         println!("{}", "─".repeat(60));
         
         let start_time = Instant::now();
@@ -642,7 +642,7 @@ impl NovaTrainer {
         println!("  Mode:     Direct pattern learning (no core iterations)");
         println!("  Learning rate: {:.4}", self.learning_rate);
         println!("  Vocabulary: {} words", self.vocab_forward.len());
-        println!("  Threads: {} (auto-detected)", auto_detect_threads());
+        println!("  Threads: {} (Rayon pool)", rayon::current_num_threads());
         println!("{}", "─".repeat(60));
         
         let start_time = Instant::now();

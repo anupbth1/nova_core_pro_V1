@@ -12,6 +12,7 @@ mod benchmark;
 mod trainer;
 mod dataset;
 mod model;
+mod cuda;
 
 
 use clap::{Parser, Subcommand};
@@ -24,6 +25,7 @@ use crate::benchmark::NovaBenchmark;
 use crate::trainer::{NovaTrainer, init_global_thread_pool};
 use crate::dataset::{NovaDataset, DatasetSource, HFDatasetRef, FilterCondition, ColumnMapping, DatasetFormat};
 use crate::model::NovaModelManager;
+use crate::cuda::{init_global_accelerator, get_backend_name, is_gpu_available};
 
 
 #[derive(Parser)]
@@ -405,6 +407,10 @@ fn main() {
     // Initialize global thread pool with user-requested core count
     // If --cores 0 is passed, auto-detects from available CPU cores
     init_global_thread_pool(cli.cores);
+    
+    // Auto-detect and initialize GPU accelerator (CUDA/HIP/CPU)
+    // This checks for NVIDIA GPU → CUDA, AMD GPU → HIP, none → CPU Rayon
+    init_global_accelerator();
     
     let mut nova = NovaLoom::new(cli.dim, cli.cores);
     

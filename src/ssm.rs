@@ -312,6 +312,57 @@ pub fn selective_scan_step(ssm: &mut StateSpace, x: &[f32], _use_input_dependent
     ssm.output_buf.clone()
 }
 
+/// Raw selective scan step operating on flat slices (no StateSpace struct needed).
+/// Used by the CUDA module's CPU fallback path.
+/// 
+///   h(t) = exp(Δ * A) * h(t-1) + Δ * B * x(t)
+///   y(t) = C * h(t) + D * x(t)
+pub fn selective_scan_step_raw(
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    h: &mut [f32],
+    x: &[f32],
+    delta: &[f32],
+    delta_bias: &[f32],
+    d: &[f32],
+    output: &mut [f32],
+    d_inner: usize,
+    d_state: usize,
+) {
+    let ds = d_state;
+    
+    // 1. Compute Δ = softplus(delta * x + delta_bias)
+    // Write Δ into output buffer temporarily
+    for i in 0..d_inner {
+        output[i] = softplus(delta[i] * x[i] + delta_bias[i]);
+    }
+    
+    // 2. Discretize and update hidden state
+    for i in 0..d_inner {
+        let di = output[i]; // delta[i]
+        let xi = x[i];
+        let base = i * ds;
+        
+        for j in 0..ds {
+            let idx = base + j;
+            let delta_a = (di * a[idx]).exp();
+            let delta_b_x = di * b[idx] * xi;
+            h[idx] = delta_a * h[idx] + delta_b_x;
+        }
+    }
+    
+    // 3. Compute output: y = C * h + D * x
+    for i in 0..d_inner {
+        let base = i * ds;
+        let mut c_h_sum = 0.0;
+        for j in 0..ds {
+            c_h_sum += c[base + j] * h[base + j];
+        }
+        output[i] = c_h_sum + d[i] * x[i];
+    }
+}
+
 /// Full selective scan over a sequence of inputs.
 pub fn selective_scan_sequence(ssm: &mut StateSpace, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
     inputs.iter().map(|x| selective_scan_step(ssm, x, true)).collect()
