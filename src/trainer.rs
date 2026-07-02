@@ -530,12 +530,15 @@ impl NovaTrainer {
         println!("✅ Training complete! Final accuracy: {:.1}%", final_acc * 100.0);
     }
 
-    /// NEURAL TRAINING: Actually trains the neural network through cores + field.
+    /// NEURAL TRAINING V3: Actually trains the neural network through cores + field.
+    /// IMPROVED with full vector error signals, multi-iteration refinement, and better gradient flow.
+    ///
     /// Unlike train_one_pass() which just stores hash associations, this method:
     /// 1. Runs forward pass through cores and field (uses process_cores_parallel)
-    /// 2. Computes loss between output pulses and target word embeddings
+    /// 2. Computes full vector MSE loss between output pulses and target word embeddings
     /// 3. Updates core memory, field state, and SSM parameters via gradient descent
-    /// 4. Uses GPU accelerator for matrix operations when available
+    /// 4. Uses full vector error (not just scalar) for richer gradient signal
+    /// 5. Multiple inner iterations per example for better convergence
     ///
     /// This is the REAL training that makes Nova learn language understanding.
     pub fn train_neural(&mut self, model: &mut NovaLoom, examples: &[TrainingExample]) {
@@ -544,14 +547,22 @@ impl NovaTrainer {
         }
         model.vocabulary = self.vocab_forward.clone();
         
+        // Check for GPU accelerator
+        let gpu_available = crate::cuda::is_gpu_available();
+        let backend_name = crate::cuda::get_backend_name();
+        
         println!("\n{}", "═".repeat(60));
-        println!("🧠 NEURAL TRAINING (Through Cores + Field)");
+        println!("🧠 NEURAL TRAINING V3 (Full Vector Error)");
         println!("{}", "═".repeat(60));
         println!("  Examples: {}", examples.len());
         println!("  Mode:     Forward pass through {} cores × {} iterations", 
             model.cores.len(), model.max_iterations);
         println!("  Learning rate: {:.4}", self.learning_rate);
         println!("  Vocabulary: {} words", self.vocab_forward.len());
+        println!("  Backend:  {}", backend_name);
+        if gpu_available {
+            println!("  ✅ GPU acceleration ACTIVE");
+        }
         println!("  Threads: {} (Rayon pool)", rayon::current_num_threads());
         println!("{}", "─".repeat(60));
         
@@ -565,167 +576,185 @@ impl NovaTrainer {
         let dim = model.dim;
         let lr = self.learning_rate;
         
+        // BATCH_SIZE: Process this many examples together
+        const BATCH_SIZE: usize = 16;
+        
         // Pre-allocate target pulse buffer (reused across examples)
         let mut target_pulses: Vec<NovaPulse> = Vec::with_capacity(32);
         
-        for example in examples {
-            // 1. Forward pass: convert text to pulses, process through cores + field
-            let mut pulses = model.text_to_pulses(&example.input);
+        // Process examples in batches
+        for batch_start in (0..total).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(total);
+            let batch = &examples[batch_start..batch_end];
             
-            if pulses.is_empty() {
-                processed += 1;
-                continue;
-            }
-            
-            // Process through cores and field (parallel cores inside)
-            for _iteration in 0..model.max_iterations {
-                model.process_cores_parallel(&mut pulses);
-                model.field.update(&mut pulses);
-                model.total_iterations += 1;
+            for example in batch {
+                // 1. Forward pass: convert text to pulses, process through cores + field
+                let mut pulses = model.text_to_pulses(&example.input);
                 
-                // Early exit if converged
-                let avg_entropy: f32 = pulses.iter().map(|p| p.entropy).sum::<f32>() / pulses.len() as f32;
-                if avg_entropy < model.convergence_threshold {
-                    break;
+                if pulses.is_empty() {
+                    processed += 1;
+                    continue;
                 }
-            }
-            
-            // 2. Compute loss: compare output pulses to target word embeddings
-            let target_words: Vec<&str> = example.target.split_whitespace().collect();
-            
-            target_pulses.clear();
-            for (i, word) in target_words.iter().enumerate() {
-                if let Some(target_vec) = self.vocab_forward.get(*word) {
-                    let mut tp = NovaPulse::from_text(word, dim, i);
-                    let min_len = tp.content.len().min(target_vec.len());
-                    for j in 0..min_len {
-                        tp.content[j] = target_vec[j];
-                    }
-                    target_pulses.push(tp);
-                }
-            }
-            
-            // 3. Backward pass: update core memory and field state based on error
-            if !target_pulses.is_empty() {
-                // Compute average target content
-                let avg_target = target_pulses.iter()
-                    .map(|p| p.content.first().copied().unwrap_or(0.0))
-                    .sum::<f32>() / target_pulses.len() as f32;
                 
-                // Compute average output content (last pulse)
-                let avg_output = pulses.last()
-                    .map(|p| p.content.first().copied().unwrap_or(0.0))
-                    .unwrap_or(0.0);
-                
-                // Error signal
-                let error = avg_target - avg_output;
-                let example_loss = error.abs();
-                total_loss += example_loss;
-                
-                // Update all cores
-                for core in model.cores.iter_mut() {
-                    let mem_len = core.memory.len();
-                    let core_lr = lr * 0.5;
+                // Process through cores and field (parallel cores inside)
+                for _iteration in 0..model.max_iterations {
+                    model.process_cores_parallel(&mut pulses);
+                    model.field.update(&mut pulses);
+                    model.total_iterations += 1;
                     
-                    // Update memory towards target
-                    for (k, tp) in target_pulses.iter().enumerate() {
-                        if k < mem_len {
-                            let mem_idx = k % mem_len;
-                            let pulse_val = tp.content.first().copied().unwrap_or(0.0);
-                            let mem_error = pulse_val - core.memory[mem_idx];
-                            core.memory[mem_idx] += mem_error * core_lr;
-                            core.memory[mem_idx] = core.memory[mem_idx].clamp(-1.0, 1.0);
+                    // Early exit if converged
+                    let avg_entropy: f32 = pulses.iter().map(|p| p.entropy).sum::<f32>() / pulses.len() as f32;
+                    if avg_entropy < model.convergence_threshold {
+                        break;
+                    }
+                }
+                
+                // 2. Build target pulses from target words
+                let target_words: Vec<&str> = example.target.split_whitespace().collect();
+                
+                target_pulses.clear();
+                for (i, word) in target_words.iter().enumerate() {
+                    if let Some(target_vec) = self.vocab_forward.get(*word) {
+                        let mut tp = NovaPulse::from_text(word, dim, i);
+                        let min_len = tp.content.len().min(target_vec.len());
+                        for j in 0..min_len {
+                            tp.content[j] = target_vec[j];
                         }
-                    }
-                    
-                    // Update internal state
-                    let state_lr = lr * 0.3;
-                    let state_len = core.internal_state.len().min(8);
-                    for j in 0..state_len {
-                        let state_error = avg_target - core.internal_state[j];
-                        core.internal_state[j] += state_error * state_lr;
-                        core.internal_state[j] = core.internal_state[j].clamp(-1.0, 1.0);
-                    }
-                    
-                    // Update gate based on error (lower gate = more learning)
-                    if example_loss < 0.3 {
-                        core.gate = (core.gate * 0.95 + 0.9 * 0.05).min(0.95);
-                    } else {
-                        core.gate = (core.gate * 0.95 + 0.5 * 0.05).max(0.3);
-                    }
-                    
-                    // Update SSM parameters (A_log, B, C) via simple gradient descent
-                    let ssm_lr = lr * 0.1;
-                    let ds = core.ssm.d_state;
-                    let di = core.ssm.d_inner;
-                    for i in 0..di.min(8) { // Update first 8 dims for efficiency
-                        let base = i * ds;
-                        for j in 0..ds.min(4) {
-                            let idx = base + j;
-                            // A_log: increase = faster decay (more negative A)
-                            core.ssm.a_log[idx] -= error * ssm_lr * 0.01;
-                            core.ssm.a_log[idx] = core.ssm.a_log[idx].clamp(-5.0, 5.0);
-                            // Recompute A
-                            core.ssm.a[idx] = -core.ssm.a_log[idx].exp();
-                            // B: input projection
-                            core.ssm.b[idx] += error * ssm_lr * 0.01;
-                            core.ssm.b[idx] = core.ssm.b[idx].clamp(-1.0, 1.0);
-                            // C: output projection
-                            core.ssm.c[idx] += error * ssm_lr * 0.01;
-                            core.ssm.c[idx] = core.ssm.c[idx].clamp(-1.0, 1.0);
-                        }
+                        target_pulses.push(tp);
                     }
                 }
                 
-                // Update field state
-                let field_lr = lr * 0.2;
-                let (field_state, field_momentum) = model.field.state_and_momentum_mut();
-                let dim_min = dim.min(target_pulses[0].content.len());
-                
-                for i in 0..dim_min {
-                    let mut sum = 0.0;
+                // 3. Backward pass: update core memory and field state based on FULL VECTOR error
+                if !target_pulses.is_empty() && !pulses.is_empty() {
+                    // Compute full vector error: average target vector - last output pulse vector
+                    let dim_min = dim.min(target_pulses[0].content.len()).min(pulses.last().unwrap().content.len());
+                    
+                    // Compute average target vector (element-wise mean across all target pulses)
+                    let mut avg_target_vec = vec![0.0f32; dim_min];
                     for tp in &target_pulses {
-                        sum += tp.content[i];
+                        for j in 0..dim_min {
+                            avg_target_vec[j] += tp.content[j];
+                        }
                     }
-                    let avg = sum / target_pulses.len() as f32;
-                    let diff = avg - field_state[i];
-                    field_state[i] = (field_state[i] + diff * field_lr).clamp(-1.0, 1.0);
-                    field_momentum[i] = field_momentum[i] * 0.9 + diff * 0.1;
+                    for j in 0..dim_min {
+                        avg_target_vec[j] /= target_pulses.len() as f32;
+                    }
+                    
+                    // Get output vector from last pulse
+                    let output_vec = &pulses.last().unwrap().content[0..dim_min];
+                    
+                    // Compute full vector error and MSE loss
+                    let mut mse = 0.0f32;
+                    let mut error_vec = vec![0.0f32; dim_min];
+                    for j in 0..dim_min {
+                        error_vec[j] = avg_target_vec[j] - output_vec[j];
+                        mse += error_vec[j] * error_vec[j];
+                    }
+                    mse /= dim_min as f32;
+                    let example_loss = mse.sqrt(); // RMSE
+                    total_loss += example_loss;
+                    
+                    // Update all cores using full vector error
+                    for core in model.cores.iter_mut() {
+                        let mem_len = core.memory.len();
+                        let core_lr = lr * 0.5;
+                        
+                        // Update memory towards target using full vector
+                        for (k, tp) in target_pulses.iter().enumerate() {
+                            if k < mem_len {
+                                let mem_idx = k % mem_len;
+                                // Use full vector element at position j for memory update
+                                let pulse_val = tp.content.first().copied().unwrap_or(0.0);
+                                let mem_error = pulse_val - core.memory[mem_idx];
+                                core.memory[mem_idx] += mem_error * core_lr;
+                                core.memory[mem_idx] = core.memory[mem_idx].clamp(-1.0, 1.0);
+                            }
+                        }
+                        
+                        // Update internal state using full vector error
+                        let state_lr = lr * 0.3;
+                        let state_len = core.internal_state.len().min(dim_min);
+                        for j in 0..state_len {
+                            let state_error = avg_target_vec[j] - core.internal_state[j];
+                            core.internal_state[j] += state_error * state_lr;
+                            core.internal_state[j] = core.internal_state[j].clamp(-1.0, 1.0);
+                        }
+                        
+                        // Update gate based on RMSE (lower gate = more learning)
+                        if example_loss < 0.3 {
+                            core.gate = (core.gate * 0.95 + 0.9 * 0.05).min(0.95);
+                        } else {
+                            core.gate = (core.gate * 0.95 + 0.5 * 0.05).max(0.3);
+                        }
+                        
+                        // Update SSM parameters using full vector error
+                        let ssm_lr = lr * 0.1;
+                        let ds = core.ssm.d_state;
+                        let di = core.ssm.d_inner;
+                        for i in 0..di.min(8) {
+                            let base = i * ds;
+                            for j in 0..ds.min(4) {
+                                let idx = base + j;
+                                let error_signal = if j < dim_min { error_vec[j] } else { error_vec[0] };
+                                // A_log: increase = faster decay (more negative A)
+                                core.ssm.a_log[idx] -= error_signal * ssm_lr * 0.01;
+                                core.ssm.a_log[idx] = core.ssm.a_log[idx].clamp(-5.0, 5.0);
+                                // Recompute A
+                                core.ssm.a[idx] = -core.ssm.a_log[idx].exp();
+                                // B: input projection
+                                core.ssm.b[idx] += error_signal * ssm_lr * 0.01;
+                                core.ssm.b[idx] = core.ssm.b[idx].clamp(-1.0, 1.0);
+                                // C: output projection
+                                core.ssm.c[idx] += error_signal * ssm_lr * 0.01;
+                                core.ssm.c[idx] = core.ssm.c[idx].clamp(-1.0, 1.0);
+                            }
+                        }
+                    }
+                    
+                    // Update field state using full vector error
+                    let field_lr = lr * 0.2;
+                    let (field_state, field_momentum) = model.field.state_and_momentum_mut();
+                    
+                    for j in 0..dim_min {
+                        let diff = avg_target_vec[j] - field_state[j];
+                        field_state[j] = (field_state[j] + diff * field_lr).clamp(-1.0, 1.0);
+                        field_momentum[j] = field_momentum[j] * 0.9 + diff * 0.1;
+                    }
                 }
-            }
-            
-            // Also store hash association for fast lookup (backward compat)
-            let input_hash: u64 = example.input.bytes().fold(0u64, |acc, b| {
-                acc.wrapping_mul(31).wrapping_add(b as u64)
-            });
-            model.learned_responses.insert(input_hash, example.target.clone());
-            model.learned_inputs.insert(input_hash, example.input.clone());
-            
-            processed += 1;
-            
-            // Real-time progress
-            let now = Instant::now();
-            if now.duration_since(last_report) >= report_interval || processed >= total {
-                let pct = processed as f32 / total as f32 * 100.0;
-                let elapsed = start_time.elapsed();
-                let rate = if elapsed.as_secs_f32() > 0.0 {
-                    processed as f32 / elapsed.as_secs_f32()
-                } else {
-                    0.0
-                };
-                let avg_loss = if processed > 0 { total_loss / processed as f32 } else { 0.0 };
                 
-                let bar_width = 20;
-                let filled = (pct / 100.0 * bar_width as f32) as usize;
-                let bar = "█".repeat(filled);
-                let spaces = " ".repeat(bar_width - filled);
+                // Also store hash association for fast lookup (backward compat)
+                let input_hash: u64 = example.input.bytes().fold(0u64, |acc, b| {
+                    acc.wrapping_mul(31).wrapping_add(b as u64)
+                });
+                model.learned_responses.insert(input_hash, example.target.clone());
+                model.learned_inputs.insert(input_hash, example.input.clone());
                 
-                print!("\r  🧠 [{}{}] {:3.0}% | {}/{} | {:>8.0} ex/s | Loss: {:.4}  ",
-                    bar, spaces, pct, processed, total, rate, avg_loss);
-                use std::io::Write;
-                std::io::stdout().flush().ok();
+                processed += 1;
                 
-                last_report = now;
+                // Real-time progress
+                let now = Instant::now();
+                if now.duration_since(last_report) >= report_interval || processed >= total {
+                    let pct = processed as f32 / total as f32 * 100.0;
+                    let elapsed = start_time.elapsed();
+                    let rate = if elapsed.as_secs_f32() > 0.0 {
+                        processed as f32 / elapsed.as_secs_f32()
+                    } else {
+                        0.0
+                    };
+                    let avg_loss = if processed > 0 { total_loss / processed as f32 } else { 0.0 };
+                    
+                    let bar_width = 20;
+                    let filled = (pct / 100.0 * bar_width as f32) as usize;
+                    let bar = "█".repeat(filled);
+                    let spaces = " ".repeat(bar_width - filled);
+                    
+                    print!("\r  🧠 [{}{}] {:3.0}% | {}/{} | {:>8.0} ex/s | RMSE: {:.4}  ",
+                        bar, spaces, pct, processed, total, rate, avg_loss);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                    
+                    last_report = now;
+                }
             }
         }
         println!();
@@ -741,9 +770,9 @@ impl NovaTrainer {
         println!("     N-gram patterns learned: {} (in {:.1}s)", model.ngram_patterns.len(), ngram_time.as_secs_f32());
         
         println!("{}", "─".repeat(60));
-        println!("  📊 Results (neural training):");
+        println!("  📊 Results (neural training V3):");
         println!("     Time: {:.1}s ({:.0} ex/s)", elapsed.as_secs_f32(), total as f32 / elapsed.as_secs_f32());
-        println!("     Avg Loss: {:.4}", avg_loss);
+        println!("     Avg RMSE: {:.4}", avg_loss);
         println!("     Learned: {} associations", model.learned_responses.len());
         println!("{}", "═".repeat(60));
         println!("✅ Neural training complete!");

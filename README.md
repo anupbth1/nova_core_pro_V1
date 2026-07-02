@@ -127,6 +127,13 @@ cargo run --release -- multi-hf-train \
   --model-name "my-pro-model" \
   --pro
 
+# With NEURAL mode (real gradient-based learning through cores + field)
+cargo run --release -- multi-hf-train \
+  --datasets "tiny_shakespeare" \
+  --max-rows 200 \
+  --neural \
+  --model-name "my-neural-model"
+
 # With custom column mapping
 cargo run --release -- multi-hf-train \
   --datasets "imdb" \
@@ -142,6 +149,7 @@ cargo run --release -- multi-hf-train \
 - ✅ Progress bar with ETA during training
 - ✅ N-gram pattern learning for text generation
 - ✅ Pro mode for adaptive learning
+- ✅ **Neural mode** (`--neural`): Real gradient-based training through cores + field (full vector error)
 
 ### 4. Train with Hugging Face Datasets (`nova hf-train`)
 
@@ -177,9 +185,19 @@ cargo run --release -- smart-chat
 
 In Smart Chat mode:
 - Type any message to get a response
-- Type `train 50` to train on 50 examples interactively
+- Type `train 50` to train on 50 examples (hash-based, fast)
+- Type `neural 50` to train on 50 examples (neural, real learning through cores + field)
 - Type `stats` to see model performance
+- Type `load <name>` to load a saved model
+- Type `save <name>` to save the current model
+- Type `timeout <secs>` to set response timeout (default: 30s, range: 5-300)
 - Type `exit` to quit
+
+**New in Smart Chat:**
+- ✅ **Input timeout**: Chat won't hang forever - auto-detects no-input after 30s
+- ✅ **Neural training**: Type `neural 50` for real gradient-based learning
+- ✅ **Save/Load models**: Type `save my-model` or `load my-model` directly
+- ✅ **Configurable timeout**: Type `timeout 60` to change to 60 seconds
 
 ## 📊 NOVA CORE - Complete Summary
 
@@ -453,8 +471,12 @@ cargo run --release -- smart-chat
 
 # Andar type karo:
 #   "hello" → model response dekhein
-#   "train 50" → aur train karein interactively
+#   "train 50" → hash-based training (fast)
+#   "neural 50" → neural training (real learning through cores + field)
 #   "stats" → model performance dekhein
+#   "save my-model" → model save karo
+#   "load my-model" → model load karo
+#   "timeout 60" → response timeout set karo (default: 30s)
 #   "exit" → bahar nikle
 🔹 Step 6: Model Save/Load Karein (Save & Load)
 

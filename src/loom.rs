@@ -222,7 +222,7 @@ impl NovaLoom {
                 }
             }
             
-            if best_sim < 0.25 {
+            if best_sim < 0.35 {
                 result.push_str("the");
             } else {
                 result.push_str(best_word);
@@ -307,6 +307,11 @@ impl NovaLoom {
     /// This is the MAIN inference method for text generation models.
     /// Given a prompt, it generates `max_words` additional words and returns
     /// ONLY the newly generated words (the prompt is NOT included in the output).
+    ///
+    /// Uses a hybrid approach:
+    /// 1. First tries pulse-based prediction through cores + field (if vocabulary is trained)
+    /// 2. Falls back to n-gram pattern matching
+    /// 3. Falls back to diverse word selection
     pub fn generate_text(&mut self, prompt: &str, max_words: usize) -> String {
         // Remember the prompt length so we can strip it from the final output
         let prompt_word_count = prompt.split_whitespace().count();
@@ -325,6 +330,12 @@ impl NovaLoom {
         // Maximum words to ban (prevent banning everything)
         const MAX_BANNED: usize = 20;
         const REPETITION_PENALTY: f32 = 0.25;
+        
+        // Decide whether to use pulse-based prediction.
+        // Use pulse-based if we have a trained vocabulary AND the model has been
+        // neurally trained (cores have meaningful state).
+        let use_pulse_prediction = !self.vocabulary.is_empty() 
+            && self.cores.iter().any(|c| c.gate > 0.5);
         
         for _ in 0..max_words {
             // --- Improved loop detection: window of 8, catches ABAB, AAA, ABCABC ---
@@ -385,7 +396,25 @@ impl NovaLoom {
                 continue;
             }
             
-            // Get the last N words as context (up to ngram_order)
+            // Step 1: Try pulse-based prediction through cores + field (neural mode)
+            // This uses the trained cores to predict the next word from context
+            if use_pulse_prediction && output_words.len() >= 2 {
+                let context_words: Vec<String> = output_words.iter()
+                    .skip(output_words.len().saturating_sub(4))
+                    .cloned()
+                    .collect();
+                let predicted = self.predict_next_word_via_pulses_excluding(&context_words, &banned_words);
+                if predicted != "the" || !self.ngram_patterns.is_empty() {
+                    // Only use pulse prediction if it found something meaningful
+                    // or if n-gram fallback is available
+                    output_words.push(predicted.clone());
+                    recent_words.push(predicted);
+                    if recent_words.len() > 12 { recent_words.remove(0); }
+                    continue;
+                }
+            }
+            
+            // Step 2: Try n-gram pattern matching (fast, deterministic)
             let context_start = if output_words.len() >= self.ngram_order {
                 output_words.len() - self.ngram_order
             } else {
@@ -396,9 +425,8 @@ impl NovaLoom {
                 .map(|w| w.as_str())
                 .collect();
             let context_str = context.join(" ");
-            
-            // Step 1: Try n-gram pattern matching first (fast, deterministic)
             let context_hash = hash_text(&context_str);
+            
             if let Some(predictions) = self.ngram_patterns.get(&context_hash) {
                 if !predictions.is_empty() {
                     let best = predictions.iter()
@@ -419,7 +447,7 @@ impl NovaLoom {
                 }
             }
             
-            // Step 2: Try shorter n-gram contexts (backoff)
+            // Step 3: Try shorter n-gram contexts (backoff)
             let mut found = false;
             'backoff: for order in (1..self.ngram_order).rev() {
                 if output_words.len() >= order {
@@ -452,8 +480,7 @@ impl NovaLoom {
             }
             if found { continue; }
 
-            // Step 3: Sample from the overall n-gram distribution (no context — pure frequency)
-            // This is much better than random pulse similarity when context is unknown.
+            // Step 4: Sample from the overall n-gram distribution (no context — pure frequency)
             let next_word = self.sample_from_ngram_distribution(&banned_words, &recent_words);
             if let Some(word) = next_word {
                 output_words.push(word.clone());
@@ -462,7 +489,7 @@ impl NovaLoom {
                 continue;
             }
 
-            // Step 4: Last resort — diverse word from vocabulary
+            // Step 5: Last resort — diverse word from vocabulary
             let next_word = self.pick_diverse_word(&banned_words, &recent_words);
             output_words.push(next_word.clone());
             recent_words.push(next_word);
@@ -567,7 +594,7 @@ impl NovaLoom {
         // The last pulse represents the predicted next word
         if let Some(last_pulse) = pulses.last() {
             let (word, sim) = self.find_closest_word_excluding(last_pulse, banned);
-            if sim > 0.25 {
+            if sim > 0.35 {
                 return word;
             }
         }
@@ -592,7 +619,7 @@ impl NovaLoom {
                         best_word = word;
                     }
                 }
-                if best_sim > 0.25 {
+                if best_sim > 0.35 {
                     return best_word.to_string();
                 }
             }

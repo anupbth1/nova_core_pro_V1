@@ -45,6 +45,7 @@ default = []
 cuda = ["cudarc"]
 gpu = ["cuda"]  # Default GPU feature = CUDA
 hip = []         # AMD GPU support (future)
+cudarc = ["dep:cudarc"]
 
 [profile.release]
 opt-level = 3          # Maximum optimization

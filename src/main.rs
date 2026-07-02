@@ -627,21 +627,40 @@ fn main() {
             println!("\n🧠 Nova Smart Chat (Trained Mode)");
             println!("{}", "─".repeat(40));
             println!("Type 'exit' or 'quit' to stop");
-            println!("Type 'train <N>' to train on N examples");
+            println!("Type 'train <N>' to train on N examples (hash-based, fast)");
+            println!("Type 'neural <N>' to train on N examples (neural, real learning)");
             println!("Type 'stats' to see performance");
             println!("Type 'load <name>' to load a trained model");
+            println!("Type 'save <name>' to save the current model");
+            println!("Type 'timeout <secs>' to set response timeout (default: 30)");
             println!("{}\n", "─".repeat(40));
             
             let mut trainer = NovaTrainer::new();
+            let mut response_timeout_secs: u64 = 30;
             
             loop {
                 print!("{} ", "🧠".bright_cyan());
                 use std::io::Write;
                 std::io::stdout().flush().unwrap();
                 
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                let input = input.trim();
+                // Read input with timeout using a separate thread
+                let input = {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let mut buf = String::new();
+                        match std::io::stdin().read_line(&mut buf) {
+                            Ok(_) => { let _ = tx.send(buf); }
+                            Err(_) => { /* ignore */ }
+                        }
+                    });
+                    match rx.recv_timeout(std::time::Duration::from_secs(response_timeout_secs)) {
+                        Ok(line) => line.trim().to_string(),
+                        Err(_) => {
+                            println!("\n⏰ No input received for {} seconds. Type something or 'exit' to quit.", response_timeout_secs);
+                            continue;
+                        }
+                    }
+                };
                 
                 if input == "exit" || input == "quit" {
                     println!("👋 Goodbye!");
@@ -656,6 +675,17 @@ fn main() {
                             last.epoch, last.loss, last.accuracy * 100.0);
                     }
                     println!("📚 Vocabulary: {} words", trainer.vocab_forward.len());
+                    println!("⏱️  Response timeout: {}s", response_timeout_secs);
+                    continue;
+                }
+                
+                if input.starts_with("timeout ") {
+                    if let Ok(secs) = input[8..].trim().parse::<u64>() {
+                        response_timeout_secs = secs.max(5).min(300);
+                        println!("✅ Response timeout set to {} seconds", response_timeout_secs);
+                    } else {
+                        println!("❌ Usage: timeout <seconds> (5-300)");
+                    }
                     continue;
                 }
                 
@@ -664,10 +694,23 @@ fn main() {
                         let data = NovaTrainer::generate_training_data(n);
                         trainer.train(&mut nova, &data, 5);
                         nova.name = "trained-model".to_string();
-                        println!("✅ Training complete!");
+                        println!("✅ Hash-based training complete!");
                         print_header(&nova);
                     } else {
                         println!("❌ Usage: train <number_of_examples>");
+                    }
+                    continue;
+                }
+                
+                if input.starts_with("neural ") {
+                    if let Ok(n) = input[7..].trim().parse::<usize>() {
+                        let data = NovaTrainer::generate_training_data(n);
+                        trainer.train_neural(&mut nova, &data);
+                        nova.name = "neural-trained-model".to_string();
+                        println!("✅ Neural training complete!");
+                        print_header(&nova);
+                    } else {
+                        println!("❌ Usage: neural <number_of_examples>");
                     }
                     continue;
                 }
@@ -690,6 +733,16 @@ fn main() {
                     continue;
                 }
                 
+                if input.starts_with("save ") {
+                    let name = input[5..].trim();
+                    let model_mgr = NovaModelManager::new();
+                    match model_mgr.save_model(&nova, name) {
+                        Ok(path) => println!("✅ Model saved to: {}", path),
+                        Err(e) => eprintln!("❌ Failed to save model: {}", e),
+                    }
+                    continue;
+                }
+                
                 if input.is_empty() {
                     continue;
                 }
@@ -697,7 +750,7 @@ fn main() {
                 let start = Instant::now();
                 
                 // Use the model's process method which handles learned_responses, n-gram patterns, and fallback
-                let raw_output = nova.process(input);
+                let raw_output = nova.process(&input);
 
                 // Post-process: trim to a clean sentence boundary (max 20 words).
                 // Prevents runaway generations from flooding the terminal.
@@ -707,8 +760,6 @@ fn main() {
                 
                 println!("{} {}", "nova:".bright_green(), output);
                 println!("{} {:?}\n", "⏱️".dimmed(), duration);
-
-
             }
         }
 
