@@ -46,13 +46,13 @@ fn main() {
             let status = std::process::Command::new(&nvcc_path)
                 .args(common_flags)
                 .args(&["-arch", arch, "-o", &ptx_output, "kernels/ssm.cu"])
-                .status()
-                .unwrap_or_else(|_| {
-                    // If nvcc fails entirely, return a non-success status
-                    std::process::ExitStatus::from_raw(1)
-                });
+                .status();
             
-            if status.success() {
+            // If nvcc command couldn't be launched (e.g., nvcc not found),
+            // treat it as a failure by checking if status is Ok and successful
+            let is_success = status.map(|s| s.success()).unwrap_or(false);
+            
+            if is_success {
                 compiled_count += 1;
                 println!("cargo:warning=✅ Compiled {} PTX ({})", arch, name);
                 if primary_ptx.is_empty() {
