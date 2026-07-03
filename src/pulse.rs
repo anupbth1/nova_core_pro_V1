@@ -2,6 +2,9 @@
 //! 
 //! Unlike traditional LLM tokens, NovaPulse is a continuous vector
 //! that can split/merge dynamically based on context.
+//!
+//! PRIORITY 1: Added semantic_content for refined semantic representation
+//! and converged flag for tracking pulse stabilization.
 
 use rand::Rng;
 use serde::{Serialize, Deserialize};
@@ -10,6 +13,11 @@ use serde::{Serialize, Deserialize};
 pub struct NovaPulse {
     /// Continuous vector representation (no fixed vocabulary)
     pub content: Vec<f32>,
+    
+    /// PRIORITY 1: Refined semantic representation after reasoning transforms.
+    /// Stores the semantically meaningful direction of this pulse,
+    /// separate from the raw content which may contain noise.
+    pub semantic_content: Vec<f32>,
     
     /// Importance weight (0.0 to 1.0)
     pub weight: f32,
@@ -22,18 +30,26 @@ pub struct NovaPulse {
     
     /// Optional: pointer to parent pulse (for hierarchy)
     pub parent: Option<usize>,
+    
+    /// PRIORITY 1: Whether this pulse has converged to a stable state.
+    /// Set to true when content changes between iterations fall below threshold.
+    pub converged: bool,
 }
+
 
 impl NovaPulse {
     /// Create a new random pulse (for initialization)
     pub fn new(dim: usize, position: usize) -> Self {
         let mut rng = rand::thread_rng();
+        let content: Vec<f32> = (0..dim).map(|_| rng.gen_range(-0.5..0.5)).collect();
         Self {
-            content: (0..dim).map(|_| rng.gen_range(-0.5..0.5)).collect(),
+            semantic_content: content.clone(),
+            content,
             weight: rng.gen_range(0.3..1.0),
             entropy: rng.gen_range(0.1..0.8),
             position,
             parent: None,
+            converged: false,
         }
     }
     
@@ -56,13 +72,16 @@ impl NovaPulse {
         }
         
         Self {
+            semantic_content: content.clone(),
             content,
             weight: (word.len() as f32 / 15.0).min(1.0),
             entropy: if word.len() < 4 { 0.6 } else { 0.3 },
             position,
             parent: None,
+            converged: false,
         }
     }
+
     
     /// Apply transformation to pulse content
     pub fn transform(&mut self, f: impl Fn(f32) -> f32) {

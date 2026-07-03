@@ -36,6 +36,9 @@ once_cell = "1.19"
 # Loading mode: dynamic-loading (default, loads .dll at runtime)
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["cuda-12000", "dynamic-loading", "driver"] }
 
+# HTTP client for tool use (optional, enable with --features http)
+ureq = { version = "2.9", optional = true }
+
 # Terminal UI (will add later)
 # ratatui = "0.26"
 # crossterm = "0.27"
@@ -46,6 +49,7 @@ cuda = ["cudarc"]
 gpu = ["cuda"]  # Default GPU feature = CUDA
 hip = []         # AMD GPU support (future)
 cudarc = ["dep:cudarc"]
+http = ["ureq"]  # HTTP support for tool use
 
 [profile.release]
 opt-level = 3          # Maximum optimization

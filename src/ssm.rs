@@ -10,6 +10,7 @@
 //! Key insight: Flat arrays + stride = cache-friendly + auto-vectorizable.
 
 use std::f32::consts::E;
+use serde::{Serialize, Deserialize};
 
 // ============================================================================
 // StateSpace Parameters (Flat Memory Layout)
@@ -25,7 +26,7 @@ use std::f32::consts::E;
 /// 2. Cache-friendly sequential access
 /// 3. Auto-vectorization by rustc
 /// 4. Easy to port to GPU later
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSpace {
     /// State dimension (N in Mamba paper, typically 16)
     pub d_state: usize,

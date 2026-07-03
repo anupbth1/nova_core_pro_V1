@@ -70,6 +70,9 @@ pub struct ModelSnapshot {
     pub learned_responses: HashMap<u64, String>,
     /// Original input texts for learned responses (hash -> original input text)
     pub learned_inputs: HashMap<u64, String>,
+    /// PHASE 5: Knowledge store for structured knowledge representation
+    #[serde(default)]
+    pub knowledge: Option<crate::knowledge::KnowledgeStore>,
 }
 
 
@@ -224,6 +227,7 @@ impl NovaModelManager {
             all_words: model.all_words.clone(),
             learned_responses: model.learned_responses.clone(),
             learned_inputs: model.learned_inputs.clone(),
+            knowledge: Some(model.knowledge.clone()),
         };
 
 
@@ -350,9 +354,15 @@ impl NovaModelManager {
         // Restore learned inputs for word-overlap matching
         loom.learned_inputs = snapshot.learned_inputs.clone();
         
-        println!("  📂 Model '{}' loaded (dim={}, cores={}, vocab={}, learned={}, ngrams={})", 
+        // PHASE 5: Restore knowledge store if present
+        if let Some(knowledge) = &snapshot.knowledge {
+            loom.knowledge = knowledge.clone();
+        }
+        
+        println!("  📂 Model '{}' loaded (dim={}, cores={}, vocab={}, learned={}, ngrams={}, knowledge={})", 
             name, snapshot.config.dim, snapshot.cores.len(), snapshot.vocabulary.len(),
-            snapshot.learned_responses.len(), snapshot.ngram_patterns.len());
+            snapshot.learned_responses.len(), snapshot.ngram_patterns.len(),
+            loom.knowledge.knowledge_count());
 
         
         Ok((loom, snapshot.vocabulary))

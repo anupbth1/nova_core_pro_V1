@@ -12,6 +12,7 @@
 
 use crate::loom::NovaLoom;
 use crate::pulse::NovaPulse;
+use crate::optimizer::{NovaOptimizer, GradientBuffer};
 use rand::Rng;
 use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
@@ -83,6 +84,12 @@ pub struct NovaTrainer {
     pub vocab_reverse: HashMap<u64, String>,
     /// Whether vocabulary is initialized
     pub vocab_initialized: bool,
+    /// PRIORITY 2: AdamW optimizer for gradient-based learning
+    pub optimizer: NovaOptimizer,
+    /// PRIORITY 2: Gradient buffer for accumulating gradients across micro-batches
+    pub grad_buffer: Option<GradientBuffer>,
+    /// PRIORITY 2: Whether optimizer states have been initialized
+    pub optimizer_initialized: bool,
 }
 
 impl NovaTrainer {
@@ -95,7 +102,31 @@ impl NovaTrainer {
             vocab_forward: HashMap::new(),
             vocab_reverse: HashMap::new(),
             vocab_initialized: false,
+            optimizer: NovaOptimizer::new(0.001),
+            grad_buffer: None,
+            optimizer_initialized: false,
         }
+    }
+    
+    /// PRIORITY 2: Initialize optimizer states for the model.
+    /// Must be called before training to set up AdamW states for all parameters.
+    pub fn init_optimizer(&mut self, model: &NovaLoom) {
+        let num_cores = model.cores.len();
+        let core_mem_size = model.cores[0].memory.len();
+        let core_state_size = model.dim;
+        let ssm_d_inner = model.cores[0].ssm.d_inner;
+        let ssm_d_state = model.cores[0].ssm.d_state;
+        let ssm_total = ssm_d_inner * ssm_d_state;
+        
+        self.optimizer.init_adam_states(num_cores, core_mem_size, core_state_size, ssm_total, ssm_d_inner);
+        self.optimizer.learning_rate = self.learning_rate;
+        
+        // Create gradient buffer
+        self.grad_buffer = Some(GradientBuffer::new(num_cores, core_mem_size, core_state_size, ssm_d_inner, ssm_d_state));
+        self.optimizer_initialized = true;
+        
+        println!("  ⚡ Optimizer initialized: {} AdamW states, {} cores, {} SSM params",
+            self.optimizer.adam_states.len(), num_cores, ssm_total * 3);
     }
 
     /// Initialize vocabulary from training data
@@ -297,122 +328,123 @@ impl NovaTrainer {
         if count > 0 { total_loss / count as f32 } else { 1.0 }
     }
 
-    /// OPTIMIZED V3: Train the model on a batch of examples.
-    /// Pre-allocates buffers, minimizes HashMap lookups, uses flat loops.
-    /// The forward pass is already parallelized inside NovaLoom (process_cores_parallel).
+    /// PRIORITY 2: Train the model on a batch of examples using AdamW optimizer.
+    /// Uses finite-difference gradient computation and AdamW parameter updates.
+    /// Replaces the old heuristic-based backward pass with proper gradient descent.
+    ///
+    /// The training pipeline:
+    /// 1. Forward pass through cores and field
+    /// 2. Compute MSE loss against target word embeddings
+    /// 3. Compute gradients via finite differences (central difference)
+    /// 4. Accumulate gradients across micro-batches
+    /// 5. Apply AdamW update when accumulation threshold is reached
+    /// 6. Clip gradients to prevent explosion
+    /// 7. Store hash associations for fast inference (backward compat)
     pub fn train_batch(&mut self, model: &mut NovaLoom, examples: &[TrainingExample]) -> f32 {
         let batch_size = examples.len().min(64);
         let mut total_loss = 0.0;
-        let dim = model.dim;
-        let lr = self.learning_rate;
         
-        // Pre-allocate target pulse buffer (reused across examples)
-        let mut target_pulses: Vec<NovaPulse> = Vec::with_capacity(32);
+        // Ensure optimizer is initialized
+        if !self.optimizer_initialized {
+            self.init_optimizer(model);
+        }
         
         for example in examples.iter().take(batch_size) {
-            // Forward pass with pre-allocated pulse buffer
-            let mut pulses = model.text_to_pulses(&example.input);
+            // PRIORITY 2: Use optimizer's finite-difference gradient computation.
+            // This computes gradients for core memory, internal state, gate,
+            // field state, and SSM parameters via central difference approximation.
+            let grads = self.optimizer.compute_gradients_finite_diff(
+                model,
+                &example.input,
+                &example.target,
+                &self.vocab_forward,
+            );
             
-            // Process through cores and field (cores are already parallel inside)
-            for _iteration in 0..model.max_iterations {
-                model.process_cores_parallel(&mut pulses);
-                model.field.update(&mut pulses);
-                model.total_iterations += 1;
-                
-                // Early exit check
-                let mut avg_entropy = 0.0;
-                for p in &pulses { avg_entropy += p.entropy; }
-                avg_entropy /= pulses.len() as f32;
-                if avg_entropy < model.convergence_threshold {
-                    break;
+            // Accumulate gradients into the gradient buffer
+            if let Some(ref mut grad_buffer) = self.grad_buffer {
+                for c in 0..grads.core_memory_grads.len().min(grad_buffer.core_memory_grads.len()) {
+                    for i in 0..grads.core_memory_grads[c].len().min(grad_buffer.core_memory_grads[c].len()) {
+                        grad_buffer.core_memory_grads[c][i] += grads.core_memory_grads[c][i];
+                    }
                 }
+                for c in 0..grads.core_state_grads.len().min(grad_buffer.core_state_grads.len()) {
+                    for i in 0..grads.core_state_grads[c].len().min(grad_buffer.core_state_grads[c].len()) {
+                        grad_buffer.core_state_grads[c][i] += grads.core_state_grads[c][i];
+                    }
+                }
+                for c in 0..grads.core_gate_grads.len().min(grad_buffer.core_gate_grads.len()) {
+                    grad_buffer.core_gate_grads[c] += grads.core_gate_grads[c];
+                }
+                for i in 0..grads.field_state_grads.len().min(grad_buffer.field_state_grads.len()) {
+                    grad_buffer.field_state_grads[i] += grads.field_state_grads[i];
+                }
+                for i in 0..grads.field_momentum_grads.len().min(grad_buffer.field_momentum_grads.len()) {
+                    grad_buffer.field_momentum_grads[i] += grads.field_momentum_grads[i];
+                }
+                for c in 0..grads.ssm_a_log_grads.len().min(grad_buffer.ssm_a_log_grads.len()) {
+                    for i in 0..grads.ssm_a_log_grads[c].len().min(grad_buffer.ssm_a_log_grads[c].len()) {
+                        grad_buffer.ssm_a_log_grads[c][i] += grads.ssm_a_log_grads[c][i];
+                    }
+                }
+                for c in 0..grads.ssm_b_grads.len().min(grad_buffer.ssm_b_grads.len()) {
+                    for i in 0..grads.ssm_b_grads[c].len().min(grad_buffer.ssm_b_grads[c].len()) {
+                        grad_buffer.ssm_b_grads[c][i] += grads.ssm_b_grads[c][i];
+                    }
+                }
+                for c in 0..grads.ssm_c_grads.len().min(grad_buffer.ssm_c_grads.len()) {
+                    for i in 0..grads.ssm_c_grads[c].len().min(grad_buffer.ssm_c_grads[c].len()) {
+                        grad_buffer.ssm_c_grads[c][i] += grads.ssm_c_grads[c][i];
+                    }
+                }
+                grad_buffer.accumulation_steps += 1;
             }
-
-            // Compute loss (simplified - just use hash-based)
+            
+            // Compute loss using the optimizer's loss function
+            let loss = crate::optimizer::compute_loss(
+                model, &example.input, &example.target, &self.vocab_forward
+            );
+            total_loss += loss;
+            
+            // Store hash association for fast inference (backward compat)
             let input_hash: u64 = example.input.bytes().fold(0u64, |acc, b| {
                 acc.wrapping_mul(31).wrapping_add(b as u64)
             });
-            
-            // Store learned association
             model.learned_responses.insert(input_hash, example.target.clone());
             model.learned_inputs.insert(input_hash, example.input.clone());
-            
-            // Simplified loss: 0.0 if exact match found, else small positive
-            let loss = if model.learned_responses.get(&input_hash).map_or(false, |r| r == &example.target) {
-                0.01
-            } else {
-                0.5
-            };
-            total_loss += loss;
-            
-            // Backward pass: update core memory and field state
-            let target_words: Vec<&str> = example.target.split_whitespace().collect();
-            
-            target_pulses.clear();
-            for (i, word) in target_words.iter().enumerate() {
-                if let Some(target_vec) = self.vocab_forward.get(*word) {
-                    let mut tp = NovaPulse::from_text(word, dim, i);
-                    let min_len = tp.content.len().min(target_vec.len());
-                    for j in 0..min_len {
-                        tp.content[j] = target_vec[j];
-                    }
-                    target_pulses.push(tp);
+        }
+        
+        // PRIORITY 2: Apply accumulated gradients using AdamW optimizer.
+        // Clip gradients first to prevent explosion, then apply AdamW update.
+        if let Some(ref mut grad_buffer) = self.grad_buffer {
+            if grad_buffer.accumulation_steps > 0 {
+                // Average gradients by accumulation steps
+                let scale = 1.0 / grad_buffer.accumulation_steps as f32;
+                for g in &mut grad_buffer.core_memory_grads {
+                    for x in g.iter_mut() { *x *= scale; }
                 }
+                for g in &mut grad_buffer.core_state_grads {
+                    for x in g.iter_mut() { *x *= scale; }
+                }
+                for x in &mut grad_buffer.core_gate_grads { *x *= scale; }
+                for x in &mut grad_buffer.field_state_grads { *x *= scale; }
+                for x in &mut grad_buffer.field_momentum_grads { *x *= scale; }
+                for g in &mut grad_buffer.ssm_a_log_grads { for x in g.iter_mut() { *x *= scale; } }
+                for g in &mut grad_buffer.ssm_b_grads { for x in g.iter_mut() { *x *= scale; } }
+                for g in &mut grad_buffer.ssm_c_grads { for x in g.iter_mut() { *x *= scale; } }
+                
+                // Clip gradients
+                self.optimizer.clip_gradients(grad_buffer);
+                
+                // Apply AdamW update
+                self.optimizer.apply_gradients(
+                    &mut model.cores,
+                    &mut model.field,
+                    grad_buffer,
+                );
+                
+                // Reset gradient buffer
+                grad_buffer.reset();
             }
-            
-            if !target_pulses.is_empty() {
-                // Compute average target content once (reused across cores)
-                let avg_target = target_pulses.iter()
-                    .map(|p| p.content.first().copied().unwrap_or(0.0))
-                    .sum::<f32>() / target_pulses.len() as f32;
-                
-                // Update all cores in a single pass
-                for core in model.cores.iter_mut() {
-                    let mem_len = core.memory.len();
-                    let core_lr = lr * 0.5;
-                    
-                    // Update memory
-                    for (k, tp) in target_pulses.iter().enumerate() {
-                        if k < mem_len {
-                            let mem_idx = k % mem_len;
-                            let pulse_val = tp.content.first().copied().unwrap_or(0.0);
-                            core.memory[mem_idx] = core.memory[mem_idx] * (1.0 - core_lr) + pulse_val * core_lr;
-                        }
-                    }
-                    
-                    // Update internal state
-                    let state_lr = lr * 0.3;
-                    let state_len = core.internal_state.len().min(8);
-                    for j in 0..state_len {
-                        core.internal_state[j] = core.internal_state[j] * (1.0 - state_lr) + avg_target * state_lr;
-                    }
-                    
-                    // Update gate
-                    if loss < 0.3 {
-                        core.gate = (core.gate * 0.95 + 0.9 * 0.05).min(0.95);
-                    } else {
-                        core.gate = (core.gate * 0.95 + 0.5 * 0.05).max(0.3);
-                    }
-                }
-                
-                // Update field state (single pass using combined mutable access)
-                let field_lr = lr * 0.2;
-                let (field_state, field_momentum) = model.field.state_and_momentum_mut();
-                let dim_min = dim.min(target_pulses[0].content.len());
-                
-                for i in 0..dim_min {
-                    let mut sum = 0.0;
-                    for tp in &target_pulses {
-                        sum += tp.content[i];
-                    }
-                    let avg = sum / target_pulses.len() as f32;
-                    let diff = avg - field_state[i];
-                    field_state[i] = (field_state[i] + diff * field_lr).clamp(-1.0, 1.0);
-                    field_momentum[i] = field_momentum[i] * 0.9 + diff * 0.1;
-                }
-            }
-            
-            model.total_pulses_processed += pulses.len();
         }
         
         total_loss / batch_size as f32
@@ -530,34 +562,45 @@ impl NovaTrainer {
         println!("✅ Training complete! Final accuracy: {:.1}%", final_acc * 100.0);
     }
 
-    /// NEURAL TRAINING V3: Actually trains the neural network through cores + field.
-    /// IMPROVED with full vector error signals, multi-iteration refinement, and better gradient flow.
+    /// NEURAL TRAINING V4: Gradient-based training using AdamW optimizer.
+    /// PRIORITY 2: Replaces the old heuristic backward pass with proper
+    /// finite-difference gradient computation and AdamW parameter updates.
     ///
-    /// Unlike train_one_pass() which just stores hash associations, this method:
-    /// 1. Runs forward pass through cores and field (uses process_cores_parallel)
-    /// 2. Computes full vector MSE loss between output pulses and target word embeddings
-    /// 3. Updates core memory, field state, and SSM parameters via gradient descent
-    /// 4. Uses full vector error (not just scalar) for richer gradient signal
-    /// 5. Multiple inner iterations per example for better convergence
+    /// Training pipeline:
+    /// 1. Forward pass through cores and field (process_cores_parallel)
+    /// 2. Compute MSE loss against target word embeddings
+    /// 3. Compute gradients via finite differences (central difference)
+    /// 4. Accumulate gradients across micro-batches
+    /// 5. Apply AdamW update with gradient clipping
+    /// 6. Track loss and convergence metrics
     ///
-    /// This is the REAL training that makes Nova learn language understanding.
+    /// This is the REAL gradient-based training that makes Nova learn.
     pub fn train_neural(&mut self, model: &mut NovaLoom, examples: &[TrainingExample]) {
         if !self.vocab_initialized {
             self.init_vocabulary(examples);
         }
         model.vocabulary = self.vocab_forward.clone();
         
+        // Ensure optimizer is initialized
+        if !self.optimizer_initialized {
+            self.init_optimizer(model);
+        }
+        
         // Check for GPU accelerator
         let gpu_available = crate::cuda::is_gpu_available();
         let backend_name = crate::cuda::get_backend_name();
         
         println!("\n{}", "═".repeat(60));
-        println!("🧠 NEURAL TRAINING V3 (Full Vector Error)");
+        println!("🧠 NEURAL TRAINING V4 (AdamW Gradient-Based)");
         println!("{}", "═".repeat(60));
         println!("  Examples: {}", examples.len());
         println!("  Mode:     Forward pass through {} cores × {} iterations", 
             model.cores.len(), model.max_iterations);
-        println!("  Learning rate: {:.4}", self.learning_rate);
+        println!("  Optimizer: AdamW (lr={:.4}, β1={}, β2={}, wd={})",
+            self.optimizer.learning_rate, self.optimizer.beta1, 
+            self.optimizer.beta2, self.optimizer.weight_decay);
+        println!("  Gradient:  Finite difference (central, ε=0.001)");
+        println!("  Accumulation: {} steps before apply", self.optimizer.accumulation_steps);
         println!("  Vocabulary: {} words", self.vocab_forward.len());
         println!("  Backend:  {}", backend_name);
         if gpu_available {
@@ -573,19 +616,23 @@ impl NovaTrainer {
         let total = examples.len();
         let mut processed = 0;
         let mut total_loss = 0.0;
-        let dim = model.dim;
-        let lr = self.learning_rate;
+        let mut batch_idx: usize = 0;
         
         // BATCH_SIZE: Process this many examples together
         const BATCH_SIZE: usize = 16;
-        
-        // Pre-allocate target pulse buffer (reused across examples)
-        let mut target_pulses: Vec<NovaPulse> = Vec::with_capacity(32);
         
         // Process examples in batches
         for batch_start in (0..total).step_by(BATCH_SIZE) {
             let batch_end = (batch_start + BATCH_SIZE).min(total);
             let batch = &examples[batch_start..batch_end];
+            let current_batch_size = batch_end - batch_start;
+            
+            // Reset per-batch GPU profiler before processing this batch
+            if gpu_available {
+                let mut acc = crate::cuda::get_accelerator();
+                acc.reset_batch_profile();
+                drop(acc);
+            }
             
             for example in batch {
                 // 1. Forward pass: convert text to pulses, process through cores + field
@@ -596,129 +643,144 @@ impl NovaTrainer {
                     continue;
                 }
                 
-                // Process through cores and field (parallel cores inside)
+                // Process through cores and field (GPU-accelerated if available)
                 for _iteration in 0..model.max_iterations {
-                    model.process_cores_parallel(&mut pulses);
-                    model.field.update(&mut pulses);
+                    if gpu_available {
+                        let mut acc = crate::cuda::get_accelerator();
+                        let mut pulses_content: Vec<Vec<f32>> = pulses.iter().map(|p| p.content.clone()).collect();
+                        let mut pulses_entropy: Vec<f32> = pulses.iter().map(|p| p.entropy).collect();
+                        let mut pulses_weight: Vec<f32> = pulses.iter().map(|p| p.weight).collect();
+                        
+                        acc.process_cores_batch(
+                            &mut model.cores,
+                            &mut pulses_content,
+                            &mut pulses_entropy,
+                            &mut pulses_weight,
+                        );
+                        
+                        for (i, pulse) in pulses.iter_mut().enumerate() {
+                            if i < pulses_content.len() {
+                                let len = pulse.content.len().min(pulses_content[i].len());
+                                pulse.content[..len].copy_from_slice(&pulses_content[i][..len]);
+                            }
+                            if i < pulses_entropy.len() {
+                                pulse.entropy = pulses_entropy[i];
+                            }
+                            if i < pulses_weight.len() {
+                                pulse.weight = pulses_weight[i];
+                            }
+                        }
+                        
+                        let pulses_content_refs: Vec<Vec<f32>> = pulses.iter().map(|p| p.content.clone()).collect();
+                        let pulses_weight_refs: Vec<f32> = pulses.iter().map(|p| p.weight).collect();
+                        let field_lr = model.field.learning_rate();
+                        let field_diff = model.field.diffusion();
+                        let (field_state, field_momentum) = model.field.state_and_momentum_mut();
+                        acc.field_update(
+                            field_state,
+                            field_momentum,
+                            &pulses_content_refs,
+                            &pulses_weight_refs,
+                            field_lr,
+                            field_diff,
+                            model.dim,
+                        );
+                        drop(acc);
+                    } else {
+                        model.process_cores_parallel(&mut pulses);
+                        model.field.update(&mut pulses);
+                    }
                     model.total_iterations += 1;
                     
-                    // Early exit if converged
                     let avg_entropy: f32 = pulses.iter().map(|p| p.entropy).sum::<f32>() / pulses.len() as f32;
                     if avg_entropy < model.convergence_threshold {
                         break;
                     }
                 }
                 
-                // 2. Build target pulses from target words
-                let target_words: Vec<&str> = example.target.split_whitespace().collect();
+                // 2. PRIORITY 2: Compute gradients via finite differences and accumulate
+                let grads = self.optimizer.compute_gradients_finite_diff(
+                    model,
+                    &example.input,
+                    &example.target,
+                    &self.vocab_forward,
+                );
                 
-                target_pulses.clear();
-                for (i, word) in target_words.iter().enumerate() {
-                    if let Some(target_vec) = self.vocab_forward.get(*word) {
-                        let mut tp = NovaPulse::from_text(word, dim, i);
-                        let min_len = tp.content.len().min(target_vec.len());
-                        for j in 0..min_len {
-                            tp.content[j] = target_vec[j];
+                // Accumulate gradients into the gradient buffer
+                if let Some(ref mut grad_buffer) = self.grad_buffer {
+                    for c in 0..grads.core_memory_grads.len().min(grad_buffer.core_memory_grads.len()) {
+                        for i in 0..grads.core_memory_grads[c].len().min(grad_buffer.core_memory_grads[c].len()) {
+                            grad_buffer.core_memory_grads[c][i] += grads.core_memory_grads[c][i];
                         }
-                        target_pulses.push(tp);
                     }
+                    for c in 0..grads.core_state_grads.len().min(grad_buffer.core_state_grads.len()) {
+                        for i in 0..grads.core_state_grads[c].len().min(grad_buffer.core_state_grads[c].len()) {
+                            grad_buffer.core_state_grads[c][i] += grads.core_state_grads[c][i];
+                        }
+                    }
+                    for c in 0..grads.core_gate_grads.len().min(grad_buffer.core_gate_grads.len()) {
+                        grad_buffer.core_gate_grads[c] += grads.core_gate_grads[c];
+                    }
+                    for i in 0..grads.field_state_grads.len().min(grad_buffer.field_state_grads.len()) {
+                        grad_buffer.field_state_grads[i] += grads.field_state_grads[i];
+                    }
+                    for i in 0..grads.field_momentum_grads.len().min(grad_buffer.field_momentum_grads.len()) {
+                        grad_buffer.field_momentum_grads[i] += grads.field_momentum_grads[i];
+                    }
+                    for c in 0..grads.ssm_a_log_grads.len().min(grad_buffer.ssm_a_log_grads.len()) {
+                        for i in 0..grads.ssm_a_log_grads[c].len().min(grad_buffer.ssm_a_log_grads[c].len()) {
+                            grad_buffer.ssm_a_log_grads[c][i] += grads.ssm_a_log_grads[c][i];
+                        }
+                    }
+                    for c in 0..grads.ssm_b_grads.len().min(grad_buffer.ssm_b_grads.len()) {
+                        for i in 0..grads.ssm_b_grads[c].len().min(grad_buffer.ssm_b_grads[c].len()) {
+                            grad_buffer.ssm_b_grads[c][i] += grads.ssm_b_grads[c][i];
+                        }
+                    }
+                    for c in 0..grads.ssm_c_grads.len().min(grad_buffer.ssm_c_grads.len()) {
+                        for i in 0..grads.ssm_c_grads[c].len().min(grad_buffer.ssm_c_grads[c].len()) {
+                            grad_buffer.ssm_c_grads[c][i] += grads.ssm_c_grads[c][i];
+                        }
+                    }
+                    grad_buffer.accumulation_steps += 1;
                 }
                 
-                // 3. Backward pass: update core memory and field state based on FULL VECTOR error
-                if !target_pulses.is_empty() && !pulses.is_empty() {
-                    // Compute full vector error: average target vector - last output pulse vector
-                    let dim_min = dim.min(target_pulses[0].content.len()).min(pulses.last().unwrap().content.len());
-                    
-                    // Compute average target vector (element-wise mean across all target pulses)
-                    let mut avg_target_vec = vec![0.0f32; dim_min];
-                    for tp in &target_pulses {
-                        for j in 0..dim_min {
-                            avg_target_vec[j] += tp.content[j];
+                // 3. Compute loss using the optimizer's loss function
+                let loss = crate::optimizer::compute_loss(
+                    model, &example.input, &example.target, &self.vocab_forward
+                );
+                total_loss += loss;
+                
+                // 4. Apply accumulated gradients when accumulation threshold is reached
+                if let Some(ref mut grad_buffer) = self.grad_buffer {
+                    if grad_buffer.accumulation_steps >= self.optimizer.accumulation_steps {
+                        // Average gradients by accumulation steps
+                        let scale = 1.0 / grad_buffer.accumulation_steps as f32;
+                        for g in &mut grad_buffer.core_memory_grads {
+                            for x in g.iter_mut() { *x *= scale; }
                         }
-                    }
-                    for j in 0..dim_min {
-                        avg_target_vec[j] /= target_pulses.len() as f32;
-                    }
-                    
-                    // Get output vector from last pulse
-                    let output_vec = &pulses.last().unwrap().content[0..dim_min];
-                    
-                    // Compute full vector error and MSE loss
-                    let mut mse = 0.0f32;
-                    let mut error_vec = vec![0.0f32; dim_min];
-                    for j in 0..dim_min {
-                        error_vec[j] = avg_target_vec[j] - output_vec[j];
-                        mse += error_vec[j] * error_vec[j];
-                    }
-                    mse /= dim_min as f32;
-                    let example_loss = mse.sqrt(); // RMSE
-                    total_loss += example_loss;
-                    
-                    // Update all cores using full vector error
-                    for core in model.cores.iter_mut() {
-                        let mem_len = core.memory.len();
-                        let core_lr = lr * 0.5;
+                        for g in &mut grad_buffer.core_state_grads {
+                            for x in g.iter_mut() { *x *= scale; }
+                        }
+                        for x in &mut grad_buffer.core_gate_grads { *x *= scale; }
+                        for x in &mut grad_buffer.field_state_grads { *x *= scale; }
+                        for x in &mut grad_buffer.field_momentum_grads { *x *= scale; }
+                        for g in &mut grad_buffer.ssm_a_log_grads { for x in g.iter_mut() { *x *= scale; } }
+                        for g in &mut grad_buffer.ssm_b_grads { for x in g.iter_mut() { *x *= scale; } }
+                        for g in &mut grad_buffer.ssm_c_grads { for x in g.iter_mut() { *x *= scale; } }
                         
-                        // Update memory towards target using full vector
-                        for (k, tp) in target_pulses.iter().enumerate() {
-                            if k < mem_len {
-                                let mem_idx = k % mem_len;
-                                // Use full vector element at position j for memory update
-                                let pulse_val = tp.content.first().copied().unwrap_or(0.0);
-                                let mem_error = pulse_val - core.memory[mem_idx];
-                                core.memory[mem_idx] += mem_error * core_lr;
-                                core.memory[mem_idx] = core.memory[mem_idx].clamp(-1.0, 1.0);
-                            }
-                        }
+                        // Clip gradients
+                        self.optimizer.clip_gradients(grad_buffer);
                         
-                        // Update internal state using full vector error
-                        let state_lr = lr * 0.3;
-                        let state_len = core.internal_state.len().min(dim_min);
-                        for j in 0..state_len {
-                            let state_error = avg_target_vec[j] - core.internal_state[j];
-                            core.internal_state[j] += state_error * state_lr;
-                            core.internal_state[j] = core.internal_state[j].clamp(-1.0, 1.0);
-                        }
+                        // Apply AdamW update
+                        self.optimizer.apply_gradients(
+                            &mut model.cores,
+                            &mut model.field,
+                            grad_buffer,
+                        );
                         
-                        // Update gate based on RMSE (lower gate = more learning)
-                        if example_loss < 0.3 {
-                            core.gate = (core.gate * 0.95 + 0.9 * 0.05).min(0.95);
-                        } else {
-                            core.gate = (core.gate * 0.95 + 0.5 * 0.05).max(0.3);
-                        }
-                        
-                        // Update SSM parameters using full vector error
-                        let ssm_lr = lr * 0.1;
-                        let ds = core.ssm.d_state;
-                        let di = core.ssm.d_inner;
-                        for i in 0..di.min(8) {
-                            let base = i * ds;
-                            for j in 0..ds.min(4) {
-                                let idx = base + j;
-                                let error_signal = if j < dim_min { error_vec[j] } else { error_vec[0] };
-                                // A_log: increase = faster decay (more negative A)
-                                core.ssm.a_log[idx] -= error_signal * ssm_lr * 0.01;
-                                core.ssm.a_log[idx] = core.ssm.a_log[idx].clamp(-5.0, 5.0);
-                                // Recompute A
-                                core.ssm.a[idx] = -core.ssm.a_log[idx].exp();
-                                // B: input projection
-                                core.ssm.b[idx] += error_signal * ssm_lr * 0.01;
-                                core.ssm.b[idx] = core.ssm.b[idx].clamp(-1.0, 1.0);
-                                // C: output projection
-                                core.ssm.c[idx] += error_signal * ssm_lr * 0.01;
-                                core.ssm.c[idx] = core.ssm.c[idx].clamp(-1.0, 1.0);
-                            }
-                        }
-                    }
-                    
-                    // Update field state using full vector error
-                    let field_lr = lr * 0.2;
-                    let (field_state, field_momentum) = model.field.state_and_momentum_mut();
-                    
-                    for j in 0..dim_min {
-                        let diff = avg_target_vec[j] - field_state[j];
-                        field_state[j] = (field_state[j] + diff * field_lr).clamp(-1.0, 1.0);
-                        field_momentum[j] = field_momentum[j] * 0.9 + diff * 0.1;
+                        // Reset gradient buffer
+                        grad_buffer.reset();
                     }
                 }
                 
@@ -748,7 +810,7 @@ impl NovaTrainer {
                     let bar = "█".repeat(filled);
                     let spaces = " ".repeat(bar_width - filled);
                     
-                    print!("\r  🧠 [{}{}] {:3.0}% | {}/{} | {:>8.0} ex/s | RMSE: {:.4}  ",
+                    print!("\r  🧠 [{}{}] {:3.0}% | {}/{} | {:>8.0} ex/s | Loss: {:.4}  ",
                         bar, spaces, pct, processed, total, rate, avg_loss);
                     use std::io::Write;
                     std::io::stdout().flush().ok();
@@ -756,26 +818,56 @@ impl NovaTrainer {
                     last_report = now;
                 }
             }
+            
+            // Finalize per-batch GPU profiler after processing this batch
+            if gpu_available {
+                let mut acc = crate::cuda::get_accelerator();
+                acc.finalize_batch_profile(batch_idx, current_batch_size);
+                drop(acc);
+            }
+            batch_idx += 1;
         }
         println!();
         
         let elapsed = start_time.elapsed();
         let avg_loss = if total > 0 { total_loss / total as f32 } else { 0.0 };
         
+        // Print cumulative GPU profiling report
+        if gpu_available {
+            let mut acc = crate::cuda::get_accelerator();
+            acc.cumulative_profile.total_examples = total as u64;
+            acc.print_cumulative_profile();
+            drop(acc);
+        }
+        
         // Learn n-gram patterns from training data for text generation
         println!("\n  📖 Learning n-gram patterns for text generation...");
         let ngram_start = Instant::now();
-        model.learn_ngrams(examples);
+        let ngram_text: String = examples.iter()
+            .map(|ex| format!("{} {} ", ex.input, ex.target))
+            .collect();
+        model.learn_ngrams(&ngram_text);
         let ngram_time = ngram_start.elapsed();
         println!("     N-gram patterns learned: {} (in {:.1}s)", model.ngram_patterns.len(), ngram_time.as_secs_f32());
         
+        // PHASE 5: Learn knowledge from training examples
+        println!("\n  🧠 Learning knowledge from training examples...");
+        let knowledge_start = Instant::now();
+        for ex in examples {
+            model.knowledge.learn_from_example(&ex.input, &ex.target);
+        }
+        let knowledge_time = knowledge_start.elapsed();
+        println!("     Knowledge learned: {} (in {:.1}s)", model.knowledge.knowledge_count(), knowledge_time.as_secs_f32());
+        
         println!("{}", "─".repeat(60));
-        println!("  📊 Results (neural training V3):");
+        println!("  📊 Results (neural training V4 - AdamW):");
         println!("     Time: {:.1}s ({:.0} ex/s)", elapsed.as_secs_f32(), total as f32 / elapsed.as_secs_f32());
-        println!("     Avg RMSE: {:.4}", avg_loss);
+        println!("     Avg Loss: {:.4}", avg_loss);
+        println!("     Optimizer steps: {}", self.optimizer.step);
         println!("     Learned: {} associations", model.learned_responses.len());
+        println!("     Knowledge: {}", model.knowledge.summary());
         println!("{}", "═".repeat(60));
-        println!("✅ Neural training complete!");
+        println!("✅ Neural training V4 complete!");
     }
 
     /// ULTRA-FAST V3: Single-pass training with REAL-TIME progress reporting.
@@ -862,14 +954,27 @@ impl NovaTrainer {
         // Learn n-gram patterns from training data for text generation
         println!("\n  📖 Learning n-gram patterns for text generation...");
         let ngram_start = Instant::now();
-        model.learn_ngrams(examples);
+        let ngram_text: String = examples.iter()
+            .map(|ex| format!("{} {} ", ex.input, ex.target))
+            .collect();
+        model.learn_ngrams(&ngram_text);
         let ngram_time = ngram_start.elapsed();
         println!("     N-gram patterns learned: {} (in {:.1}s)", model.ngram_patterns.len(), ngram_time.as_secs_f32());
+        
+        // PHASE 5: Learn knowledge from training examples
+        println!("\n  🧠 Learning knowledge from training examples...");
+        let knowledge_start = Instant::now();
+        for ex in examples {
+            model.knowledge.learn_from_example(&ex.input, &ex.target);
+        }
+        let knowledge_time = knowledge_start.elapsed();
+        println!("     Knowledge learned: {} (in {:.1}s)", model.knowledge.knowledge_count(), knowledge_time.as_secs_f32());
         
         println!("{}", "─".repeat(60));
         println!("  📊 Results (single pass):");
         println!("     Time: {:.1}s ({:.0} ex/s)", elapsed.as_secs_f32(), total as f32 / elapsed.as_secs_f32());
         println!("     Learned: {} associations", model.learned_responses.len());
+        println!("     Knowledge: {}", model.knowledge.summary());
         println!("{}", "═".repeat(60));
         println!("✅ Single-pass training complete!");
     }
@@ -945,14 +1050,27 @@ impl NovaTrainer {
         // Learn n-gram patterns from training data for text generation
         println!("\n  📖 Learning n-gram patterns for text generation...");
         let ngram_start = Instant::now();
-        model.learn_ngrams(examples);
+        let ngram_text: String = examples.iter()
+            .map(|ex| format!("{} {} ", ex.input, ex.target))
+            .collect();
+        model.learn_ngrams(&ngram_text);
         let ngram_time = ngram_start.elapsed();
         println!("     N-gram patterns learned: {} (in {:.1}s)", model.ngram_patterns.len(), ngram_time.as_secs_f32());
+        
+        // PHASE 5: Learn knowledge from training examples
+        println!("\n  🧠 Learning knowledge from training examples...");
+        let knowledge_start = Instant::now();
+        for ex in examples {
+            model.knowledge.learn_from_example(&ex.input, &ex.target);
+        }
+        let knowledge_time = knowledge_start.elapsed();
+        println!("     Knowledge learned: {} (in {:.1}s)", model.knowledge.knowledge_count(), knowledge_time.as_secs_f32());
         
         println!("{}", "─".repeat(60));
         println!("  📊 Results (ultra-fast mode):");
         println!("     Time: {:.1}s ({:.0} ex/s)", elapsed.as_secs_f32(), total as f32 / elapsed.as_secs_f32());
         println!("     Learned: {} associations", model.learned_responses.len());
+        println!("     Knowledge: {}", model.knowledge.summary());
         println!("{}", "═".repeat(60));
         println!("✅ Ultra-fast training complete!");
     }

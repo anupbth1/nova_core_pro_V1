@@ -13,7 +13,12 @@ mod trainer;
 mod dataset;
 mod model;
 mod cuda;
-
+mod knowledge;
+mod optimizer;
+mod context;
+mod coding;
+mod math;
+mod tools;
 
 use clap::{Parser, Subcommand};
 

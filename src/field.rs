@@ -6,11 +6,15 @@
 //! NEW: SSM-enhanced field dynamics integrate Mamba's selective scan
 //! into the field diffusion process, giving the field state-space
 //! memory for long-range dependencies.
+//!
+//! PRIORITY 1: Added content convergence tracking for adaptive early exit.
 
 use crate::pulse::NovaPulse;
 use crate::ssm::{self, StateSpace};
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NovaField {
     /// Dimension of the field (same as pulse dimension)
     dim: usize,
@@ -41,6 +45,13 @@ pub struct NovaField {
     
     /// SSM gate - how much SSM influences field state
     pub ssm_gate: f32,
+    
+    /// PRIORITY 1: History of field states for convergence detection.
+    /// Stores the last N field states to measure stabilization.
+    convergence_history: Vec<Vec<f32>>,
+    
+    /// PRIORITY 1: Maximum number of field states to keep in history.
+    max_history: usize,
 }
 
 
@@ -57,6 +68,8 @@ impl NovaField {
             ssm: None,
             use_ssm: false,
             ssm_gate: 0.3,
+            convergence_history: Vec::with_capacity(5),
+            max_history: 5,
         }
     }
     
@@ -155,6 +168,35 @@ impl NovaField {
             // Pulses become more certain as field stabilizes
             pulse.reduce_entropy(0.98);
         });
+        
+        // PRIORITY 1: Store field state in convergence history
+        self.convergence_history.push(self.state.clone());
+        if self.convergence_history.len() > self.max_history {
+            self.convergence_history.remove(0);
+        }
+    }
+    
+    /// PRIORITY 1: Compute content convergence score (0.0 = no convergence, 1.0 = fully converged).
+    /// Measures how much the field state has stabilized over recent updates.
+    /// Returns 1.0 when the field state stops changing significantly.
+    pub fn content_convergence(&self) -> f32 {
+        if self.convergence_history.len() < 2 {
+            return 0.0;
+        }
+        
+        // Compare the last two field states
+        let last = &self.convergence_history[self.convergence_history.len() - 1];
+        let prev = &self.convergence_history[self.convergence_history.len() - 2];
+        
+        let mut total_delta = 0.0f32;
+        let min_len = last.len().min(prev.len());
+        for i in 0..min_len {
+            total_delta += (last[i] - prev[i]).abs();
+        }
+        let avg_delta = total_delta / min_len as f32;
+        
+        // Convert delta to convergence score: 0 delta = 1.0 convergence
+        1.0 / (1.0 + avg_delta * 50.0)
     }
     
     /// Get current field state (for debugging)
@@ -179,6 +221,11 @@ impl NovaField {
         self.update_count = count;
     }
 
+    /// Get current field momentum (for context compression)
+    pub fn momentum(&self) -> &[f32] {
+        &self.momentum
+    }
+
     /// Get mutable reference to field state (for training updates)
     pub fn state_mut(&mut self) -> &mut [f32] {
         &mut self.state
@@ -195,9 +242,29 @@ impl NovaField {
         (&mut self.state, &mut self.momentum)
     }
 
+    /// Get the learning rate (for GPU accelerator)
+    pub fn learning_rate(&self) -> f32 {
+        self.learning_rate
+    }
+
+    /// Get the diffusion rate (for GPU accelerator)
+    pub fn diffusion(&self) -> f32 {
+        self.diffusion
+    }
+
     /// Get field energy (measure of information content)
     pub fn energy(&self) -> f32 {
         self.state.iter().map(|&x| x * x).sum::<f32>().sqrt()
+    }
+    
+    /// Get the current diffusion rate.
+    pub fn get_diffusion_rate(&self) -> f32 {
+        self.diffusion
+    }
+    
+    /// Set the diffusion rate.
+    pub fn set_diffusion_rate(&mut self, rate: f32) {
+        self.diffusion = rate;
     }
     
     /// Reset field (for new contexts)
@@ -205,6 +272,7 @@ impl NovaField {
         self.state.fill(0.0);
         self.momentum.fill(0.0);
         self.update_count = 0;
+        self.convergence_history.clear();
         // Also reset SSM state if enabled
         if let Some(ref mut ssm) = self.ssm {
             ssm.reset();
@@ -253,5 +321,26 @@ mod tests {
         let ratio = time_100.as_secs_f32() / time_10.as_secs_f32();
         println!("✅ O(n) check: 10x slower would be linear, got {:.1}x", ratio);
         assert!(ratio < 15.0, "Should be roughly linear, got {:.1}x", ratio);
+    }
+    
+    #[test]
+    fn test_content_convergence() {
+        let mut field = NovaField::new(32);
+        let mut pulses = vec![
+            NovaPulse::from_text("test", 32, 0),
+        ];
+        
+        // First update: no convergence yet
+        let conv1 = field.content_convergence();
+        assert_eq!(conv1, 0.0);
+        
+        // Multiple updates should increase convergence
+        for _ in 0..5 {
+            field.update(&mut pulses);
+        }
+        
+        let conv2 = field.content_convergence();
+        println!("✅ Field convergence after 5 updates: {:.4}", conv2);
+        assert!(conv2 > 0.0);
     }
 }
