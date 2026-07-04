@@ -677,13 +677,12 @@ impl NovaTrainer {
                         let field_diff = model.field.diffusion();
                         let (field_state, field_momentum) = model.field.state_and_momentum_mut();
                         acc.field_update(
-                            field_state,
-                            field_momentum,
                             &pulses_content_refs,
                             &pulses_weight_refs,
+                            field_state,
+                            field_momentum,
                             field_lr,
                             field_diff,
-                            model.dim,
                         );
                         drop(acc);
                     } else {

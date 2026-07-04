@@ -369,6 +369,18 @@ pub fn selective_scan_sequence(ssm: &mut StateSpace, inputs: &[Vec<f32>]) -> Vec
     inputs.iter().map(|x| selective_scan_step(ssm, x, true)).collect()
 }
 
+/// Apply SSM transform to a batch of pulses content vectors.
+/// This is the CPU fallback implementation used by the CUDA module.
+pub fn ssm_transform_batch_raw(
+    ssm: &mut StateSpace,
+    pulses_content: &mut [Vec<f32>],
+    use_time_mixing: bool,
+) {
+    for content in pulses_content.iter_mut() {
+        ssm_transform_pulse(ssm, content, use_time_mixing);
+    }
+}
+
 // ============================================================================
 // RWKV-Style Time Mixing
 // ============================================================================

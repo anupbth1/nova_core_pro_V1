@@ -64,7 +64,11 @@ fn main() {
         }
         
         if compiled_count == 0 {
-            panic!("CUDA kernel compilation failed for all architectures. Make sure nvcc is available.");
+            // Don't panic - just warn and skip CUDA. The runtime will use CPU fallback if nvcc is unavailable.
+            println!("cargo:warning=⚠️  No CUDA PTX kernels compiled. nvcc not found or not working.");
+            println!("cargo:warning=⚠️  GPU acceleration will be unavailable. The code will use CPU fallback.");
+            println!("cargo:warning=⚠️  To enable CUDA, install CUDA Toolkit and ensure nvcc is in PATH.");
+            return;
         }
         
         // Set the primary PTX path (prefer highest architecture, fall back to lowest)

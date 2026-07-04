@@ -30,7 +30,7 @@ use crate::benchmark::NovaBenchmark;
 use crate::trainer::{NovaTrainer, init_global_thread_pool};
 use crate::dataset::{NovaDataset, DatasetSource, HFDatasetRef, FilterCondition, ColumnMapping, DatasetFormat};
 use crate::model::NovaModelManager;
-use crate::cuda::{init_global_accelerator, get_backend_name, is_gpu_available};
+use crate::cuda::init_global_accelerator;
 
 
 #[derive(Parser)]

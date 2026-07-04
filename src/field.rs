@@ -344,3 +344,104 @@ mod tests {
         assert!(conv2 > 0.0);
     }
 }
+
+// ============================================================================
+// CPU Fallback Functions for CUDA Module
+// ============================================================================
+
+/// CPU fallback implementation for field update operation.
+/// This is used by the CUDA module when GPU acceleration is not available.
+pub fn field_update_raw(
+    pulses_content: &[Vec<f32>],
+    pulses_weight: &[f32],
+    field_state: &mut [f32],
+    field_momentum: &mut [f32],
+    learning_rate: f32,
+    diffusion: f32,
+) {
+    if pulses_content.is_empty() || pulses_weight.is_empty() {
+        return;
+    }
+    
+    let dim = field_state.len();
+    let mut field_avg = vec![0.0; dim];
+    let mut total_weight = 0.0;
+    
+    for (content, &weight) in pulses_content.iter().zip(pulses_weight.iter()) {
+        total_weight += weight;
+        let len = content.len().min(dim);
+        for i in 0..len {
+            field_avg[i] += content[i] * weight;
+        }
+    }
+    
+    if total_weight > 0.0 {
+        for i in 0..dim {
+            field_avg[i] /= total_weight;
+        }
+    }
+    
+    // Update field state with momentum
+    for i in 0..dim {
+        let diff = field_avg[i] - field_state[i];
+        field_momentum[i] = field_momentum[i] * 0.9 + diff * learning_rate;
+        field_state[i] += field_momentum[i];
+        field_state[i] = field_state[i].clamp(-1.0, 1.0);
+    }
+}
+
+/// CPU fallback implementation for field diffuse operation.
+/// This is used by the CUDA module when GPU acceleration is not available.
+pub fn field_diffuse_raw(
+    pulses_content: &mut [Vec<f32>],
+    field_state: &[f32],
+    diffusion_factor: f32,
+) {
+    if pulses_content.is_empty() {
+        return;
+    }
+    
+    let dim = field_state.len();
+    
+    for content in pulses_content.iter_mut() {
+        let len = content.len().min(dim);
+        for i in 0..len {
+            // Field influences pulses (attention replacement)
+            content[i] = content[i] * (1.0 - diffusion_factor) 
+                       + field_state[i] * diffusion_factor;
+        }
+    }
+}
+
+/// CPU fallback implementation for cosine similarity operation.
+/// This is used by the CUDA module when GPU acceleration is not available.
+pub fn cosine_similarity_raw(
+    query: &[f32],
+    vocabulary: &[Vec<f32>],
+    vocab_norms: &[f32],
+    similarities: &mut [f32],
+) {
+    let dim = query.len();
+    let vocab_size = vocabulary.len().min(similarities.len());
+    
+    for i in 0..vocab_size {
+        let word = &vocabulary[i];
+        let mut dot = 0.0;
+        let len = word.len().min(dim);
+        
+        for j in 0..len {
+            dot += query[j] * word[j];
+        }
+        
+        let query_norm = query.iter().take(dim).map(|&x| x * x).sum::<f32>().sqrt();
+        let word_norm = vocab_norms.get(i).copied().unwrap_or_else(|| {
+            word.iter().take(dim).map(|&x| x * x).sum::<f32>().sqrt()
+        });
+        
+        if query_norm > 0.0 && word_norm > 0.0 {
+            similarities[i] = dot / (query_norm * word_norm);
+        } else {
+            similarities[i] = 0.0;
+        }
+    }
+}

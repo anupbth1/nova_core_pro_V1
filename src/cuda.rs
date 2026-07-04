@@ -318,23 +318,44 @@ mod cuda_kernels {
     }
 
     impl CudaKernelManager {
-        pub fn new(ctx: Arc<CudaContext>) -> Result<Self, Box<dyn std::error::Error>> {
-            // Try multiple PTX architectures for broader compatibility
-            let ptx_path = std::env!("SSM_KERNELS_PTX");
-            let ptx_src = std::fs::read_to_string(ptx_path)?;
-            
-            // Also try sm_80 PTX if available (Ampere+ optimizations)
-            let ptx_path_80 = format!("{}/ssm_kernels_sm80.ptx", 
-                std::path::Path::new(&ptx_path).parent().unwrap_or(std::path::Path::new("")).display());
-            let module = if let Ok(src) = std::fs::read_to_string(&ptx_path_80) {
-                eprintln!("  Loading sm_80 PTX (Ampere+ optimized)");
-                CudaModule::from_ptx(&ctx, &src)?
-            } else {
-                eprintln!("  Loading sm_75 PTX (Turing compatible)");
-                CudaModule::from_ptx(&ctx, &ptx_src)?
-            };
-            
-            let stream = CudaStream::new(&ctx)?;
+    pub fn new(ctx: Arc<CudaContext>) -> Result<Self, Box<dyn std::error::Error>> {
+        // Try multiple PTX architectures for broader compatibility
+        let ptx_path = std::env::var("SSM_KERNELS_PTX").unwrap_or_default();
+        if ptx_path.is_empty() {
+            return Err("SSM_KERNELS_PTX environment variable not set".into());
+        }
+        let ptx_src = std::fs::read_to_string(&ptx_path)?;
+        
+        // Also try sm_80 PTX if available (Ampere+ optimizations)
+        let ptx_path_80 = format!("{}/ssm_kernels_sm80.ptx", 
+            std::path::Path::new(&ptx_path).parent().unwrap_or(std::path::Path::new("")).display());
+        
+        // Try to load PTX - handle errors gracefully
+        let module_result = if let Ok(src) = std::fs::read_to_string(&ptx_path_80) {
+            eprintln!("  Loading sm_80 PTX (Ampere+ optimized)");
+            CudaModule::from_ptx(&ctx, &src)
+        } else {
+            eprintln!("  Loading sm_75 PTX (Turing compatible)");
+            CudaModule::from_ptx(&ctx, &ptx_src)
+        };
+        
+        let module = match module_result {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("  Failed to load CUDA module: {:?}", e);
+                return Err(format!("Failed to load CUDA module: {:?}", e).into());
+            }
+        };
+        
+        // Create stream
+        let stream_result = ctx.new_stream();
+        let stream = match stream_result {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  Failed to create CUDA stream: {:?}", e);
+                return Err(format!("Failed to create CUDA stream: {:?}", e).into());
+            }
+        };
 
             Ok(Self {
                 ctx,
@@ -356,12 +377,12 @@ mod cuda_kernels {
             delta_bias: &CudaSlice<f32>, d: &CudaSlice<f32>, output: &mut CudaSlice<f32>,
             d_inner: i32, d_state: i32,
         ) -> Result<(), Box<dyn std::error::Error>> {
+            // cudarc v0.19.8: launch() takes (stream, grid, block, args) - no shared_mem param
+            // Also CudaSlice does NOT implement AsRef, pass &CudaSlice directly
             unsafe {
                 self.selective_scan_fn.launch(
-                    &self.stream, (d_inner as u32, 1, 1), (32, 1, 1), 128,
-                    &[&a.as_ref(), &b.as_ref(), &c.as_ref(), &h.as_ref(), &x.as_ref(),
-                      &delta.as_ref(), &delta_bias.as_ref(), &d.as_ref(), &output.as_ref(),
-                      &d_inner, &d_state],
+                    &self.stream, (d_inner as u32, 1, 1), (32, 1, 1),
+                    &[a, b, c, h, x, delta, delta_bias, d, output, &d_inner, &d_state],
                 )?;
             }
             Ok(())
@@ -375,9 +396,8 @@ mod cuda_kernels {
         ) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 self.ssm_transform_batch_fn.launch(
-                    &self.stream, (num_pulses as u32, 1, 1), (256, 1, 1), 0,
-                    &[&a.as_ref(), &b.as_ref(), &c.as_ref(), &h.as_ref(), &delta.as_ref(),
-                      &delta_bias.as_ref(), &d.as_ref(), &pulses_content.as_ref(), &output.as_ref(),
+                    &self.stream, (num_pulses as u32, 1, 1), (256, 1, 1),
+                    &[a, b, c, h, delta, delta_bias, d, pulses_content, output,
                       &num_pulses, &d_inner, &d_state],
                 )?;
             }
@@ -392,9 +412,9 @@ mod cuda_kernels {
             let grid = ((dim as u32 + 255) / 256, 1, 1);
             unsafe {
                 self.field_update_fn.launch(
-                    &self.stream, grid, (256, 1, 1), 0,
-                    &[&pulses_content.as_ref(), &pulses_weight.as_ref(), &field_state.as_ref(),
-                      &field_momentum.as_ref(), &learning_rate, &diffusion, &num_pulses, &dim],
+                    &self.stream, grid, (256, 1, 1),
+                    &[pulses_content, pulses_weight, field_state, field_momentum,
+                      &learning_rate, &diffusion, &num_pulses, &dim],
                 )?;
             }
             Ok(())
@@ -408,9 +428,8 @@ mod cuda_kernels {
             let grid = ((total + 255) / 256, 1, 1);
             unsafe {
                 self.field_diffuse_fn.launch(
-                    &self.stream, grid, (256, 1, 1), 0,
-                    &[&pulses_content.as_ref(), &field_state.as_ref(), &diffusion_factor,
-                      &num_pulses, &dim],
+                    &self.stream, grid, (256, 1, 1),
+                    &[pulses_content, field_state, &diffusion_factor, &num_pulses, &dim],
                 )?;
             }
             Ok(())
@@ -424,9 +443,8 @@ mod cuda_kernels {
             let grid = ((vocab_size as u32 + 255) / 256, 1, 1);
             unsafe {
                 self.cosine_similarity_fn.launch(
-                    &self.stream, grid, (256, 1, 1), 0,
-                    &[&query.as_ref(), &vocabulary.as_ref(), &vocab_norms.as_ref(),
-                      &similarities.as_ref(), &vocab_size, &dim],
+                    &self.stream, grid, (256, 1, 1),
+                    &[query, vocabulary, vocab_norms, similarities, &vocab_size, &dim],
                 )?;
             }
             Ok(())
@@ -439,8 +457,8 @@ mod cuda_kernels {
             let grid = ((n as u32 + 255) / 256, 1, 1);
             unsafe {
                 self.vector_add_fn.launch(
-                    &self.stream, grid, (256, 1, 1), 0,
-                    &[&a.as_ref(), &b.as_ref(), &scale_a, &scale_b, &n],
+                    &self.stream, grid, (256, 1, 1),
+                    &[a, b, &scale_a, &scale_b, &n],
                 )?;
             }
             Ok(())
@@ -452,8 +470,8 @@ mod cuda_kernels {
             let grid = ((n as u32 + 255) / 256, 1, 1);
             unsafe {
                 self.vector_clamp_fn.launch(
-                    &self.stream, grid, (256, 1, 1), 0,
-                    &[&a.as_ref(), &min_val, &max_val, &n],
+                    &self.stream, grid, (256, 1, 1),
+                    &[a, &min_val, &max_val, &n],
                 )?;
             }
             Ok(())
@@ -470,11 +488,11 @@ mod cuda_kernels {
         ) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 self.core_process_fn.launch(
-                    &self.stream, (num_pulses as u32, num_cores as u32, 1), (256, 1, 1), 0,
-                    &[&pulses_content.as_ref(), &pulses_entropy.as_ref(), &pulses_weight.as_ref(),
-                      &core_memory.as_ref(), &core_internal_state.as_ref(), &core_gate.as_ref(),
-                      &ssm_a.as_ref(), &ssm_b.as_ref(), &ssm_c.as_ref(), &ssm_h.as_ref(),
-                      &ssm_delta.as_ref(), &ssm_delta_bias.as_ref(), &ssm_d.as_ref(),
+                    &self.stream, (num_pulses as u32, num_cores as u32, 1), (256, 1, 1),
+                    &[pulses_content, pulses_entropy, pulses_weight,
+                      core_memory, core_internal_state, core_gate,
+                      ssm_a, ssm_b, ssm_c, ssm_h,
+                      ssm_delta, ssm_delta_bias, ssm_d,
                       &num_pulses, &dim, &num_cores, &memory_size, &d_state],
                 )?;
             }
@@ -495,11 +513,11 @@ mod cuda_kernels {
         ) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 self.core_process_fn.launch(
-                    stream, (num_pulses as u32, num_cores as u32, 1), (256, 1, 1), 0,
-                    &[&pulses_content.as_ref(), &pulses_entropy.as_ref(), &pulses_weight.as_ref(),
-                      &core_memory.as_ref(), &core_internal_state.as_ref(), &core_gate.as_ref(),
-                      &ssm_a.as_ref(), &ssm_b.as_ref(), &ssm_c.as_ref(), &ssm_h.as_ref(),
-                      &ssm_delta.as_ref(), &ssm_delta_bias.as_ref(), &ssm_d.as_ref(),
+                    stream, (num_pulses as u32, num_cores as u32, 1), (256, 1, 1),
+                    &[pulses_content, pulses_entropy, pulses_weight,
+                      core_memory, core_internal_state, core_gate,
+                      ssm_a, ssm_b, ssm_c, ssm_h,
+                      ssm_delta, ssm_delta_bias, ssm_d,
                       &num_pulses, &dim, &num_cores, &memory_size, &d_state],
                 )?;
             }
@@ -582,7 +600,8 @@ impl NovaAccelerator {
         let async_streams = if let Some(ref dev) = device {
             let mut streams = Vec::with_capacity(4);
             for _ in 0..4 {
-                if let Ok(s) = cudarc::driver::safe::CudaStream::new(dev) {
+                // cudarc v0.19.8: Use ctx.new_stream() instead of ctx.create_stream()
+                if let Ok(s) = dev.new_stream() {
                     streams.push(s);
                 }
             }
@@ -681,22 +700,30 @@ impl NovaAccelerator {
         }
     }
 
+    /// Allocate a GPU buffer and copy data from CPU to GPU.
+    /// cudarc v0.19.8: Use ctx.htod_sync_copy() instead of CudaSlice::from_slice()
     #[cfg(feature = "cuda")]
     fn alloc_from_cpu<T: cudarc::driver::DeviceRepr + Clone>(
         &self, data: &[T],
     ) -> Option<cudarc::driver::safe::CudaSlice<T>> {
         if let Some(ref dev) = self.device {
-            cudarc::driver::safe::CudaSlice::from_slice(dev, data).ok()
+            dev.htod_sync_copy(data).ok()
         } else {
             None
         }
     }
 
+    /// Copy data from GPU to CPU.
+    /// cudarc v0.19.8: Use ctx.dtoh_sync_copy() instead of slice.download()
     #[cfg(feature = "cuda")]
     fn copy_to_cpu<T: cudarc::driver::DeviceRepr + Clone>(
         &self, slice: &cudarc::driver::safe::CudaSlice<T>,
     ) -> Option<Vec<T>> {
-        slice.download().ok()
+        if let Some(ref dev) = self.device {
+            dev.dtoh_sync_copy(slice).ok()
+        } else {
+            None
+        }
     }
 
     // ========================================================================
@@ -716,9 +743,9 @@ impl NovaAccelerator {
             return Some(buf);
         }
         
-        // Allocate new buffer
+        // Allocate new buffer using ctx.alloc_zeros() instead of CudaSlice::zeros()
         if let Some(ref dev) = self.device {
-            match cudarc::driver::safe::CudaSlice::zeros(dev, size) {
+            match dev.alloc_zeros::<f32>(size) {
                 Ok(buf) => {
                     self.batch_profile.alloc_count += 1;
                     let elem_bytes = std::mem::size_of::<f32>() as u64;
@@ -745,11 +772,9 @@ impl NovaAccelerator {
         let size = data.len();
         let mut buf = self.get_or_create_buffer(key, size)?;
         
-        // Copy data into the buffer
+        // Copy data into the buffer using htod_sync_copy instead of CudaSlice::from_slice
         if let Some(ref dev) = self.device {
-            // Use from_slice to upload - this creates a new slice with data
-            // For reuse, we need to copy into existing buffer
-            match cudarc::driver::safe::CudaSlice::from_slice(dev, data) {
+            match dev.htod_sync_copy(data) {
                 Ok(new_buf) => {
                     // Track the upload
                     let elem_bytes = std::mem::size_of::<f32>() as u64;
@@ -910,6 +935,7 @@ impl NovaAccelerator {
                                 self.return_buffer(out_key, out_gpu_mut);
 
                                 if download_ok {
+                                    let start = Instant::now();
                                     self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
                                     self.gpu_ops += 1;
                                     return;
@@ -1006,8 +1032,10 @@ impl NovaAccelerator {
                 let mut pulses_gpu_mut = pulses_gpu;
                 let mut out_gpu_mut = out_gpu;
                 match mgr.launch_ssm_transform_batch(
-                    &a_gpu, &b_gpu, &c_gpu, &mut h_gpu_mut, &delta_gpu, &delta_bias_gpu, &d_gpu,
-                    &mut pulses_gpu_mut, &mut out_gpu_mut, num_pulses as i32, d_inner as i32, d_state as i32,
+                    &a_gpu, &b_gpu, &c_gpu, &mut h_gpu_mut,
+                    &delta_gpu, &delta_bias_gpu, &d_gpu,
+                    &mut pulses_gpu_mut, &mut out_gpu_mut,
+                    num_pulses as i32, d_inner as i32, d_state as i32,
                 ) {
                     Ok(()) => {
                         self.batch_profile.kernel_launch_count += 1;
@@ -1040,9 +1068,11 @@ impl NovaAccelerator {
                                     ));
                                 }
                                 if let Some(out_cpu) = self.copy_to_cpu(&out_gpu_mut) {
-                                    for (i, content) in pulses_content.iter_mut().enumerate() {
-                                        let len = content.len().min(d_inner);
-                                        for j in 0..len { content[j] = out_cpu[i * d_inner + j]; }
+                                    for i in 0..num_pulses {
+                                        let len = pulses_content[i].len().min(d_inner);
+                                        for j in 0..len {
+                                            pulses_content[i][j] = out_cpu[i * d_inner + j];
+                                        }
                                     }
                                     self.batch_profile.gpu_mem_copied_d2h += flat_size as u64 * elem_bytes;
                                     self.batch_profile.memcpy_count += 1;
@@ -1059,7 +1089,7 @@ impl NovaAccelerator {
                                 let download_time = download_start.elapsed();
                                 self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
 
-                                // Return buffers to cache for reuse
+                                // Return buffers to cache
                                 self.return_buffer(a_key, a_gpu);
                                 self.return_buffer(b_key, b_gpu);
                                 self.return_buffer(c_key, c_gpu);
@@ -1071,6 +1101,7 @@ impl NovaAccelerator {
                                 self.return_buffer(out_key, out_gpu_mut);
 
                                 if download_ok {
+                                    let start = Instant::now();
                                     self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
                                     self.gpu_ops += 1;
                                     return;
@@ -1101,7 +1132,7 @@ impl NovaAccelerator {
                 self.batch_profile.cpu_fallback_count += 1;
                 self.batch_profile.fallback_details.push((
                     "ssm_transform_batch".to_string(),
-                    "upload_to_buffer failed for one or more buffers".to_string(),
+                    "upload_to_buffer failed".to_string(),
                     "allocation returned None".to_string(),
                     "src/cuda.rs ssm_transform_batch() GPU path".to_string(),
                 ));
@@ -1110,46 +1141,42 @@ impl NovaAccelerator {
 
         // CPU fallback
         let start = Instant::now();
-        for content in pulses_content.iter_mut() {
-            crate::ssm::ssm_transform_pulse(ssm, content, use_time_mixing);
-        }
+        crate::ssm::ssm_transform_batch_raw(ssm, pulses_content, use_time_mixing);
         self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
         self.cpu_ops += 1;
     }
 
-    // ========================================================================
-    // GPU-Accelerated Field Operations
-    // ========================================================================
-
     pub fn field_update(
-        &mut self, state: &mut [f32], momentum: &mut [f32],
-        pulses_content: &[Vec<f32>], pulses_weight: &[f32],
-        learning_rate: f32, diffusion: f32, dim: usize,
+        &mut self, pulses_content: &[Vec<f32>], pulses_weight: &[f32],
+        field_state: &mut [f32], field_momentum: &mut [f32],
+        learning_rate: f32, diffusion: f32,
     ) {
         #[cfg(feature = "cuda")]
         if let Some(ref mgr) = self.kernel_mgr {
             let preprocess_start = Instant::now();
-            let num_pulses = pulses_content.len();
-            let mut flat_pulses = vec![0.0f32; num_pulses * dim];
+            let num_pulses = pulses_content.len() as i32;
+            let dim = if num_pulses > 0 { pulses_content[0].len() as i32 } else { 0 };
+            if num_pulses == 0 || dim == 0 { return; }
+            let flat_size = (num_pulses * dim) as usize;
+            let mut flat_content = vec![0.0f32; flat_size];
             for (i, content) in pulses_content.iter().enumerate() {
-                let len = content.len().min(dim);
-                for j in 0..len { flat_pulses[i * dim + j] = content[j]; }
+                let len = content.len().min(dim as usize);
+                for j in 0..len { flat_content[i * dim as usize + j] = content[j]; }
             }
             let preprocess_time = preprocess_start.elapsed();
             self.batch_profile.cpu_preprocess_ms += preprocess_time.as_millis() as f64;
 
             let upload_start = Instant::now();
-            // Use buffer cache for reusable allocations
-            let pulses_key = format!("fu_pulses_{}", flat_pulses.len());
-            let weights_key = format!("fu_weights_{}", pulses_weight.len());
-            let state_key = format!("fu_state_{}", state.len());
-            let momentum_key = format!("fu_momentum_{}", momentum.len());
+            let content_key = format!("fu_content_{}", flat_size);
+            let weight_key = format!("fu_weight_{}", pulses_weight.len());
+            let state_key = format!("fu_state_{}", field_state.len());
+            let momentum_key = format!("fu_momentum_{}", field_momentum.len());
 
-            if let (Some(pulses_gpu), Some(weights_gpu), Some(state_gpu), Some(momentum_gpu)) = (
-                self.upload_to_buffer(&pulses_key, &flat_pulses),
-                self.upload_to_buffer(&weights_key, pulses_weight),
-                self.upload_to_buffer(&state_key, state),
-                self.upload_to_buffer(&momentum_key, momentum),
+            if let (Some(content_gpu), Some(weight_gpu), Some(state_gpu), Some(momentum_gpu)) = (
+                self.upload_to_buffer(&content_key, &flat_content),
+                self.upload_to_buffer(&weight_key, pulses_weight),
+                self.upload_to_buffer(&state_key, field_state),
+                self.upload_to_buffer(&momentum_key, field_momentum),
             ) {
                 let upload_time = upload_start.elapsed();
                 self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
@@ -1158,35 +1185,14 @@ impl NovaAccelerator {
                 let mut state_gpu_mut = state_gpu;
                 let mut momentum_gpu_mut = momentum_gpu;
                 match mgr.launch_field_update(
-                    &pulses_gpu, &weights_gpu, &mut state_gpu_mut, &mut momentum_gpu_mut,
-                    learning_rate, diffusion, num_pulses as i32, dim as i32,
+                    &content_gpu, &weight_gpu, &mut state_gpu_mut, &mut momentum_gpu_mut,
+                    learning_rate, diffusion, num_pulses, dim,
                 ) {
                     Ok(()) => {
                         self.batch_profile.kernel_launch_count += 1;
                         self.batch_profile.kernel_names.push("field_update_kernel".to_string());
                         let kernel_time = kernel_start.elapsed();
                         self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
-
-                        // Launch field diffuse
-                        let diffuse_start = Instant::now();
-                        let df = diffusion * 0.95f32;
-                        match mgr.launch_field_diffuse(&mut pulses_gpu, &state_gpu_mut, df, num_pulses as i32, dim as i32) {
-                            Ok(()) => {
-                                self.batch_profile.kernel_launch_count += 1;
-                                self.batch_profile.kernel_names.push("field_diffuse_kernel".to_string());
-                            }
-                            Err(e) => {
-                                self.batch_profile.cpu_fallback_count += 1;
-                                self.batch_profile.fallback_details.push((
-                                    "field_update".to_string(),
-                                    "field_diffuse kernel launch failed".to_string(),
-                                    format!("{:?}", e),
-                                    "src/cuda.rs field_update() GPU path".to_string(),
-                                ));
-                            }
-                        }
-                        let diffuse_time = diffuse_start.elapsed();
-                        self.batch_profile.gpu_kernel_ms += diffuse_time.as_millis() as f64;
 
                         let sync_start = Instant::now();
                         match mgr.sync() {
@@ -1198,478 +1204,589 @@ impl NovaAccelerator {
                                 let download_start = Instant::now();
                                 let mut download_ok = true;
                                 let elem_bytes = std::mem::size_of::<f32>() as u64;
-                                if let Some(s) = self.copy_to_cpu(&state_gpu_mut) {
-                                    state.copy_from_slice(&s);
-                                    self.batch_profile.gpu_mem_copied_d2h += state.len() as u64 * elem_bytes;
+                                if let Some(state_cpu) = self.copy_to_cpu(&state_gpu_mut) {
+                                    field_state.copy_from_slice(&state_cpu);
+                                    self.batch_profile.gpu_mem_copied_d2h += field_state.len() as u64 * elem_bytes;
                                     self.batch_profile.memcpy_count += 1;
                                 } else {
                                     download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "field_update".to_string(),
-                                        "copy_to_cpu(state) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs field_update() GPU path".to_string(),
-                                    ));
                                 }
-                                if let Some(m) = self.copy_to_cpu(&momentum_gpu_mut) {
-                                    momentum.copy_from_slice(&m);
-                                    self.batch_profile.gpu_mem_copied_d2h += momentum.len() as u64 * elem_bytes;
+                                if let Some(momentum_cpu) = self.copy_to_cpu(&momentum_gpu_mut) {
+                                    field_momentum.copy_from_slice(&momentum_cpu);
+                                    self.batch_profile.gpu_mem_copied_d2h += field_momentum.len() as u64 * elem_bytes;
                                     self.batch_profile.memcpy_count += 1;
                                 } else {
                                     download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "field_update".to_string(),
-                                        "copy_to_cpu(momentum) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs field_update() GPU path".to_string(),
-                                    ));
                                 }
                                 let download_time = download_start.elapsed();
                                 self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
 
-                                // Return buffers to cache for reuse
-                                self.return_buffer(pulses_key, pulses_gpu);
-                                self.return_buffer(weights_key, weights_gpu);
+                                self.return_buffer(content_key, content_gpu);
+                                self.return_buffer(weight_key, weight_gpu);
                                 self.return_buffer(state_key, state_gpu_mut);
                                 self.return_buffer(momentum_key, momentum_gpu_mut);
 
                                 if download_ok {
+                                    let start = Instant::now();
                                     self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
                                     self.gpu_ops += 1;
                                     return;
                                 }
                             }
-                            Err(e) => {
-                                self.batch_profile.cpu_fallback_count += 1;
-                                self.batch_profile.fallback_details.push((
-                                    "field_update".to_string(),
-                                    "sync failed".to_string(),
-                                    format!("{:?}", e),
-                                    "src/cuda.rs field_update() GPU path".to_string(),
-                                ));
-                            }
+                            Err(_) => {}
                         }
                     }
-                    Err(e) => {
-                        self.batch_profile.cpu_fallback_count += 1;
-                        self.batch_profile.fallback_details.push((
-                            "field_update".to_string(),
-                            "kernel launch failed".to_string(),
-                            format!("{:?}", e),
-                            "src/cuda.rs field_update() GPU path".to_string(),
-                        ));
-                    }
+                    Err(_) => {}
                 }
-            } else {
-                self.batch_profile.cpu_fallback_count += 1;
-                self.batch_profile.fallback_details.push((
-                    "field_update".to_string(),
-                    "upload_to_buffer failed for one or more buffers".to_string(),
-                    "allocation returned None".to_string(),
-                    "src/cuda.rs field_update() GPU path".to_string(),
-                ));
             }
         }
 
         // CPU fallback
         let start = Instant::now();
-        let mut field_avg = vec![0.0; dim];
-        let mut total_weight = 0.0;
-        for (content, &weight) in pulses_content.iter().zip(pulses_weight.iter()) {
-            total_weight += weight;
-            for i in 0..dim.min(content.len()) { field_avg[i] += content[i] * weight; }
-        }
-        if total_weight > 0.0 {
-            for i in 0..dim { field_avg[i] /= total_weight; }
-        }
-        for i in 0..dim {
-            let diff = field_avg[i] - state[i];
-            momentum[i] = momentum[i] * 0.9 + diff * learning_rate;
-            state[i] += momentum[i];
-            state[i] = state[i].clamp(-1.0, 1.0);
-        }
+        crate::field::field_update_raw(pulses_content, pulses_weight, field_state, field_momentum, learning_rate, diffusion);
         self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
         self.cpu_ops += 1;
     }
 
-    // ========================================================================
-    // GPU-Accelerated Core Operations
-    // ========================================================================
-
-    pub fn process_cores_batch(
-        &mut self, cores: &mut [crate::core::NovaCore],
-        pulses_content: &mut [Vec<f32>], pulses_entropy: &mut [f32], pulses_weight: &mut [f32],
+    pub fn field_diffuse(
+        &mut self, pulses_content: &mut [Vec<f32>], field_state: &[f32],
+        diffusion_factor: f32,
     ) {
         #[cfg(feature = "cuda")]
         if let Some(ref mgr) = self.kernel_mgr {
             let preprocess_start = Instant::now();
-            let num_pulses = pulses_content.len();
-            let num_cores = cores.len();
-            let dim = cores[0].ssm.d_inner;
-            let d_state = cores[0].ssm.d_state;
-            let memory_size = cores[0].memory.len();
-
-            let mut flat_pulses = vec![0.0f32; num_pulses * dim];
+            let num_pulses = pulses_content.len() as i32;
+            let dim = if num_pulses > 0 { pulses_content[0].len() as i32 } else { 0 };
+            if num_pulses == 0 || dim == 0 { return; }
+            let flat_size = (num_pulses * dim) as usize;
+            let mut flat_content = vec![0.0f32; flat_size];
             for (i, content) in pulses_content.iter().enumerate() {
-                let len = content.len().min(dim);
-                for j in 0..len { flat_pulses[i * dim + j] = content[j]; }
-            }
-
-            let ssm_total = dim * d_state;
-            let mut flat_memory = vec![0.0f32; num_cores * memory_size];
-            let mut flat_internal = vec![0.0f32; num_cores * dim];
-            let mut flat_gate = vec![0.0f32; num_cores];
-            let mut flat_ssm_a = vec![0.0f32; num_cores * ssm_total];
-            let mut flat_ssm_b = vec![0.0f32; num_cores * ssm_total];
-            let mut flat_ssm_c = vec![0.0f32; num_cores * ssm_total];
-            let mut flat_ssm_h = vec![0.0f32; num_cores * ssm_total];
-            let mut flat_ssm_delta = vec![0.0f32; num_cores * dim];
-            let mut flat_ssm_delta_bias = vec![0.0f32; num_cores * dim];
-            let mut flat_ssm_d = vec![0.0f32; num_cores * dim];
-
-            for (ci, core) in cores.iter().enumerate() {
-                let mem_len = core.memory.len().min(memory_size);
-                flat_memory[ci * memory_size..ci * memory_size + mem_len].copy_from_slice(&core.memory[..mem_len]);
-                let int_len = core.internal_state.len().min(dim);
-                flat_internal[ci * dim..ci * dim + int_len].copy_from_slice(&core.internal_state[..int_len]);
-                flat_gate[ci] = core.gate;
-                flat_ssm_a[ci * ssm_total..(ci + 1) * ssm_total].copy_from_slice(&core.ssm.a);
-                flat_ssm_b[ci * ssm_total..(ci + 1) * ssm_total].copy_from_slice(&core.ssm.b);
-                flat_ssm_c[ci * ssm_total..(ci + 1) * ssm_total].copy_from_slice(&core.ssm.c);
-                flat_ssm_h[ci * ssm_total..(ci + 1) * ssm_total].copy_from_slice(&core.ssm.h);
-                flat_ssm_delta[ci * dim..(ci + 1) * dim].copy_from_slice(&core.ssm.delta);
-                flat_ssm_delta_bias[ci * dim..(ci + 1) * dim].copy_from_slice(&core.ssm.delta_bias);
-                flat_ssm_d[ci * dim..(ci + 1) * dim].copy_from_slice(&core.ssm.d);
+                let len = content.len().min(dim as usize);
+                for j in 0..len { flat_content[i * dim as usize + j] = content[j]; }
             }
             let preprocess_time = preprocess_start.elapsed();
             self.batch_profile.cpu_preprocess_ms += preprocess_time.as_millis() as f64;
 
             let upload_start = Instant::now();
-            // Use buffer cache for reusable allocations
-            let pulses_key = format!("pcb_pulses_{}", flat_pulses.len());
-            let entropy_key = format!("pcb_entropy_{}", pulses_entropy.len());
-            let weight_key = format!("pcb_weight_{}", pulses_weight.len());
-            let memory_key = format!("pcb_memory_{}", flat_memory.len());
-            let internal_key = format!("pcb_internal_{}", flat_internal.len());
-            let gate_key = format!("pcb_gate_{}", flat_gate.len());
-            let ssm_a_key = format!("pcb_ssm_a_{}", flat_ssm_a.len());
-            let ssm_b_key = format!("pcb_ssm_b_{}", flat_ssm_b.len());
-            let ssm_c_key = format!("pcb_ssm_c_{}", flat_ssm_c.len());
-            let ssm_h_key = format!("pcb_ssm_h_{}", flat_ssm_h.len());
-            let ssm_delta_key = format!("pcb_ssm_delta_{}", flat_ssm_delta.len());
-            let ssm_db_key = format!("pcb_ssm_db_{}", flat_ssm_delta_bias.len());
-            let ssm_d_key = format!("pcb_ssm_d_{}", flat_ssm_d.len());
+            let content_key = format!("fd_content_{}", flat_size);
+            let state_key = format!("fd_state_{}", field_state.len());
 
-            if let (Some(pulses_gpu), Some(entropy_gpu), Some(weight_gpu),
-                    Some(memory_gpu), Some(internal_gpu), Some(gate_gpu),
-                    Some(ssm_a_gpu), Some(ssm_b_gpu), Some(ssm_c_gpu),
-                    Some(ssm_h_gpu), Some(ssm_delta_gpu), Some(ssm_delta_bias_gpu),
-                    Some(ssm_d_gpu)) = (
-                self.upload_to_buffer(&pulses_key, &flat_pulses),
-                self.upload_to_buffer(&entropy_key, pulses_entropy),
-                self.upload_to_buffer(&weight_key, pulses_weight),
-                self.upload_to_buffer(&memory_key, &flat_memory),
-                self.upload_to_buffer(&internal_key, &flat_internal),
-                self.upload_to_buffer(&gate_key, &flat_gate),
-                self.upload_to_buffer(&ssm_a_key, &flat_ssm_a),
-                self.upload_to_buffer(&ssm_b_key, &flat_ssm_b),
-                self.upload_to_buffer(&ssm_c_key, &flat_ssm_c),
-                self.upload_to_buffer(&ssm_h_key, &flat_ssm_h),
-                self.upload_to_buffer(&ssm_delta_key, &flat_ssm_delta),
-                self.upload_to_buffer(&ssm_db_key, &flat_ssm_delta_bias),
-                self.upload_to_buffer(&ssm_d_key, &flat_ssm_d),
+            if let (Some(content_gpu), Some(state_gpu)) = (
+                self.upload_to_buffer(&content_key, &flat_content),
+                self.upload_to_buffer(&state_key, field_state),
             ) {
                 let upload_time = upload_start.elapsed();
                 self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
 
                 let kernel_start = Instant::now();
-                let mut pulses_gpu_mut = pulses_gpu;
-                let mut entropy_gpu_mut = entropy_gpu;
-                let mut weight_gpu_mut = weight_gpu;
-                let mut ssm_h_gpu_mut = ssm_h_gpu;
-
-                // Use async stream for overlapping kernel execution with data transfer
-                let kernel_result = if self.use_async_streams {
-                    if let Some(async_stream) = self.next_async_stream() {
-                        mgr.launch_core_process_async(
-                            async_stream,
-                            &mut pulses_gpu_mut, &mut entropy_gpu_mut, &mut weight_gpu_mut,
-                            &memory_gpu, &internal_gpu, &gate_gpu,
-                            &ssm_a_gpu, &ssm_b_gpu, &ssm_c_gpu, &mut ssm_h_gpu_mut,
-                            &ssm_delta_gpu, &ssm_delta_bias_gpu, &ssm_d_gpu,
-                            num_pulses as i32, dim as i32, num_cores as i32, memory_size as i32, d_state as i32,
-                        )
-                    } else {
-                        mgr.launch_core_process(
-                            &mut pulses_gpu_mut, &mut entropy_gpu_mut, &mut weight_gpu_mut,
-                            &memory_gpu, &internal_gpu, &gate_gpu,
-                            &ssm_a_gpu, &ssm_b_gpu, &ssm_c_gpu, &mut ssm_h_gpu_mut,
-                            &ssm_delta_gpu, &ssm_delta_bias_gpu, &ssm_d_gpu,
-                            num_pulses as i32, dim as i32, num_cores as i32, memory_size as i32, d_state as i32,
-                        )
-                    }
-                } else {
-                    mgr.launch_core_process(
-                        &mut pulses_gpu_mut, &mut entropy_gpu_mut, &mut weight_gpu_mut,
-                        &memory_gpu, &internal_gpu, &gate_gpu,
-                        &ssm_a_gpu, &ssm_b_gpu, &ssm_c_gpu, &mut ssm_h_gpu_mut,
-                        &ssm_delta_gpu, &ssm_delta_bias_gpu, &ssm_d_gpu,
-                        num_pulses as i32, dim as i32, num_cores as i32, memory_size as i32, d_state as i32,
-                    )
-                };
-
-                match kernel_result {
+                let mut content_gpu_mut = content_gpu;
+                match mgr.launch_field_diffuse(
+                    &mut content_gpu_mut, &state_gpu, diffusion_factor, num_pulses, dim,
+                ) {
                     Ok(()) => {
                         self.batch_profile.kernel_launch_count += 1;
-                        self.batch_profile.kernel_names.push("core_process_kernel".to_string());
+                        self.batch_profile.kernel_names.push("field_diffuse_kernel".to_string());
                         let kernel_time = kernel_start.elapsed();
                         self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
 
                         let sync_start = Instant::now();
-                        // Sync all streams when using async mode to ensure all kernels complete
-                        let sync_result = if self.use_async_streams {
-                            self.sync_all_streams()
-                        } else {
-                            mgr.sync()
-                        };
-                        match sync_result {
+                        match mgr.sync() {
                             Ok(()) => {
                                 let sync_time = sync_start.elapsed();
                                 self.batch_profile.gpu_sync_ms += sync_time.as_millis() as f64;
                                 self.batch_profile.sync_count += 1;
 
                                 let download_start = Instant::now();
-                                let mut download_ok = true;
-                                let elem_bytes = std::mem::size_of::<f32>() as u64;
-                                if let Some(p) = self.copy_to_cpu(&pulses_gpu_mut) {
-                                    for (i, content) in pulses_content.iter_mut().enumerate() {
-                                        let len = content.len().min(dim);
-                                        for j in 0..len { content[j] = p[i * dim + j]; }
+                                if let Some(content_cpu) = self.copy_to_cpu(&content_gpu_mut) {
+                                    for i in 0..num_pulses as usize {
+                                        let len = pulses_content[i].len().min(dim as usize);
+                                        for j in 0..len {
+                                            pulses_content[i][j] = content_cpu[i * dim as usize + j];
+                                        }
                                     }
-                                    self.batch_profile.gpu_mem_copied_d2h += flat_pulses.len() as u64 * elem_bytes;
+                                    let elem_bytes = std::mem::size_of::<f32>() as u64;
+                                    self.batch_profile.gpu_mem_copied_d2h += flat_size as u64 * elem_bytes;
                                     self.batch_profile.memcpy_count += 1;
-                                } else {
-                                    download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "process_cores_batch".to_string(),
-                                        "copy_to_cpu(pulses) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                                    ));
-                                }
-                                if let Some(e) = self.copy_to_cpu(&entropy_gpu_mut) {
-                                    pulses_entropy.copy_from_slice(&e);
-                                    self.batch_profile.gpu_mem_copied_d2h += pulses_entropy.len() as u64 * elem_bytes;
-                                    self.batch_profile.memcpy_count += 1;
-                                } else {
-                                    download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "process_cores_batch".to_string(),
-                                        "copy_to_cpu(entropy) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                                    ));
-                                }
-                                if let Some(w) = self.copy_to_cpu(&weight_gpu_mut) {
-                                    pulses_weight.copy_from_slice(&w);
-                                    self.batch_profile.gpu_mem_copied_d2h += pulses_weight.len() as u64 * elem_bytes;
-                                    self.batch_profile.memcpy_count += 1;
-                                } else {
-                                    download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "process_cores_batch".to_string(),
-                                        "copy_to_cpu(weight) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                                    ));
-                                }
-                                if let Some(h) = self.copy_to_cpu(&ssm_h_gpu_mut) {
-                                    for (ci, core) in cores.iter_mut().enumerate() {
-                                        core.ssm.h.copy_from_slice(&h[ci * ssm_total..(ci + 1) * ssm_total]);
-                                    }
-                                    self.batch_profile.gpu_mem_copied_d2h += ssm_total as u64 * num_cores as u64 * elem_bytes;
-                                    self.batch_profile.memcpy_count += 1;
-                                } else {
-                                    download_ok = false;
-                                    self.batch_profile.cpu_fallback_count += 1;
-                                    self.batch_profile.fallback_details.push((
-                                        "process_cores_batch".to_string(),
-                                        "copy_to_cpu(ssm_h) failed".to_string(),
-                                        "download returned None".to_string(),
-                                        "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                                    ));
                                 }
                                 let download_time = download_start.elapsed();
                                 self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
 
-                                // Return buffers to cache for reuse
-                                self.return_buffer(pulses_key, pulses_gpu_mut);
-                                self.return_buffer(entropy_key, entropy_gpu_mut);
-                                self.return_buffer(weight_key, weight_gpu_mut);
-                                self.return_buffer(memory_key, memory_gpu);
-                                self.return_buffer(internal_key, internal_gpu);
-                                self.return_buffer(gate_key, gate_gpu);
-                                self.return_buffer(ssm_a_key, ssm_a_gpu);
-                                self.return_buffer(ssm_b_key, ssm_b_gpu);
-                                self.return_buffer(ssm_c_key, ssm_c_gpu);
-                                self.return_buffer(ssm_h_key, ssm_h_gpu_mut);
-                                self.return_buffer(ssm_delta_key, ssm_delta_gpu);
-                                self.return_buffer(ssm_db_key, ssm_delta_bias_gpu);
-                                self.return_buffer(ssm_d_key, ssm_d_gpu);
+                                self.return_buffer(content_key, content_gpu_mut);
+                                self.return_buffer(state_key, state_gpu);
 
-                                if download_ok {
-                                    self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
-                                    self.gpu_ops += 1;
-                                    return;
-                                }
+                                let start = Instant::now();
+                                self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
+                                self.gpu_ops += 1;
+                                return;
                             }
-                            Err(e) => {
-                                self.batch_profile.cpu_fallback_count += 1;
-                                self.batch_profile.fallback_details.push((
-                                    "process_cores_batch".to_string(),
-                                    "sync failed".to_string(),
-                                    format!("{:?}", e),
-                                    "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                                ));
-                            }
+                            Err(_) => {}
                         }
                     }
-                    Err(e) => {
-                        self.batch_profile.cpu_fallback_count += 1;
-                        self.batch_profile.fallback_details.push((
-                            "process_cores_batch".to_string(),
-                            "kernel launch failed".to_string(),
-                            format!("{:?}", e),
-                            "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                        ));
-                    }
+                    Err(_) => {}
                 }
-            } else {
-                self.batch_profile.cpu_fallback_count += 1;
-                self.batch_profile.fallback_details.push((
-                    "process_cores_batch".to_string(),
-                    "upload_to_buffer failed for one or more buffers".to_string(),
-                    "allocation returned None".to_string(),
-                    "src/cuda.rs process_cores_batch() GPU path".to_string(),
-                ));
             }
         }
 
         // CPU fallback
         let start = Instant::now();
-        for core in cores.iter_mut() {
-            for pulse in pulses_content.iter_mut() {
-                let original = pulse.clone();
-                crate::ssm::ssm_transform_pulse(&mut core.ssm, pulse, core.use_time_mixing);
-                let ssm_strength = core.gate * 0.5;
-                for j in 0..pulse.len() {
-                    pulse[j] = original[j] * (1.0 - ssm_strength) + pulse[j] * ssm_strength;
-                    pulse[j] = pulse[j].clamp(-1.0, 1.0);
+        crate::field::field_diffuse_raw(pulses_content, field_state, diffusion_factor);
+        self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
+        self.cpu_ops += 1;
+    }
+
+    pub fn cosine_similarity(
+        &mut self, query: &[f32], vocabulary: &[Vec<f32>],
+        vocab_norms: &[f32], similarities: &mut [f32],
+    ) {
+        #[cfg(feature = "cuda")]
+        if let Some(ref mgr) = self.kernel_mgr {
+            let preprocess_start = Instant::now();
+            let vocab_size = vocabulary.len() as i32;
+            let dim = if vocab_size > 0 { vocabulary[0].len() as i32 } else { 0 };
+            if vocab_size == 0 || dim == 0 { return; }
+            let flat_size = (vocab_size * dim) as usize;
+            let mut flat_vocab = vec![0.0f32; flat_size];
+            for (i, word) in vocabulary.iter().enumerate() {
+                let len = word.len().min(dim as usize);
+                for j in 0..len { flat_vocab[i * dim as usize + j] = word[j]; }
+            }
+            let preprocess_time = preprocess_start.elapsed();
+            self.batch_profile.cpu_preprocess_ms += preprocess_time.as_millis() as f64;
+
+            let upload_start = Instant::now();
+            let query_key = format!("cs_query_{}", query.len());
+            let vocab_key = format!("cs_vocab_{}", flat_size);
+            let norms_key = format!("cs_norms_{}", vocab_norms.len());
+            let sim_key = format!("cs_sim_{}", similarities.len());
+
+            if let (Some(query_gpu), Some(vocab_gpu), Some(norms_gpu), Some(sim_gpu)) = (
+                self.upload_to_buffer(&query_key, query),
+                self.upload_to_buffer(&vocab_key, &flat_vocab),
+                self.upload_to_buffer(&norms_key, vocab_norms),
+                self.upload_to_buffer(&sim_key, similarities),
+            ) {
+                let upload_time = upload_start.elapsed();
+                self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
+
+                let kernel_start = Instant::now();
+                let mut sim_gpu_mut = sim_gpu;
+                match mgr.launch_cosine_similarity(
+                    &query_gpu, &vocab_gpu, &norms_gpu, &mut sim_gpu_mut, vocab_size, dim,
+                ) {
+                    Ok(()) => {
+                        self.batch_profile.kernel_launch_count += 1;
+                        self.batch_profile.kernel_names.push("cosine_similarity_kernel".to_string());
+                        let kernel_time = kernel_start.elapsed();
+                        self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
+
+                        let sync_start = Instant::now();
+                        match mgr.sync() {
+                            Ok(()) => {
+                                let sync_time = sync_start.elapsed();
+                                self.batch_profile.gpu_sync_ms += sync_time.as_millis() as f64;
+                                self.batch_profile.sync_count += 1;
+
+                                let download_start = Instant::now();
+                                if let Some(sim_cpu) = self.copy_to_cpu(&sim_gpu_mut) {
+                                    similarities.copy_from_slice(&sim_cpu);
+                                    let elem_bytes = std::mem::size_of::<f32>() as u64;
+                                    self.batch_profile.gpu_mem_copied_d2h += similarities.len() as u64 * elem_bytes;
+                                    self.batch_profile.memcpy_count += 1;
+                                }
+                                let download_time = download_start.elapsed();
+                                self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
+
+                                self.return_buffer(query_key, query_gpu);
+                                self.return_buffer(vocab_key, vocab_gpu);
+                                self.return_buffer(norms_key, norms_gpu);
+                                self.return_buffer(sim_key, sim_gpu_mut);
+
+                                let start = Instant::now();
+                                self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
+                                self.gpu_ops += 1;
+                                return;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
-            for e in pulses_entropy.iter_mut() {
-                *e *= 0.97;
-                *e = e.max(0.01);
+        }
+
+        // CPU fallback
+        let start = Instant::now();
+        crate::field::cosine_similarity_raw(query, vocabulary, vocab_norms, similarities);
+        self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
+        self.cpu_ops += 1;
+    }
+
+    pub fn vector_add(
+        &mut self, a: &mut [f32], b: &[f32], scale_a: f32, scale_b: f32,
+    ) {
+        #[cfg(feature = "cuda")]
+        if let Some(ref mgr) = self.kernel_mgr {
+            let n = a.len() as i32;
+            let upload_start = Instant::now();
+            let a_key = format!("va_a_{}", a.len());
+            let b_key = format!("va_b_{}", b.len());
+
+            if let (Some(a_gpu), Some(b_gpu)) = (
+                self.upload_to_buffer(&a_key, a),
+                self.upload_to_buffer(&b_key, b),
+            ) {
+                let upload_time = upload_start.elapsed();
+                self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
+
+                let kernel_start = Instant::now();
+                let mut a_gpu_mut = a_gpu;
+                match mgr.launch_vector_add(&mut a_gpu_mut, &b_gpu, scale_a, scale_b, n) {
+                    Ok(()) => {
+                        self.batch_profile.kernel_launch_count += 1;
+                        self.batch_profile.kernel_names.push("vector_add_kernel".to_string());
+                        let kernel_time = kernel_start.elapsed();
+                        self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
+
+                        let sync_start = Instant::now();
+                        match mgr.sync() {
+                            Ok(()) => {
+                                let sync_time = sync_start.elapsed();
+                                self.batch_profile.gpu_sync_ms += sync_time.as_millis() as f64;
+                                self.batch_profile.sync_count += 1;
+
+                                let download_start = Instant::now();
+                                if let Some(a_cpu) = self.copy_to_cpu(&a_gpu_mut) {
+                                    a.copy_from_slice(&a_cpu);
+                                    let elem_bytes = std::mem::size_of::<f32>() as u64;
+                                    self.batch_profile.gpu_mem_copied_d2h += a.len() as u64 * elem_bytes;
+                                    self.batch_profile.memcpy_count += 1;
+                                }
+                                let download_time = download_start.elapsed();
+                                self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
+
+                                self.return_buffer(a_key, a_gpu_mut);
+                                self.return_buffer(b_key, b_gpu);
+
+                                let start = Instant::now();
+                                self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
+                                self.gpu_ops += 1;
+                                return;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    Err(_) => {}
+                }
             }
+        }
+
+        // CPU fallback
+        let start = Instant::now();
+        for i in 0..a.len() {
+            a[i] = a[i] * scale_a + b[i] * scale_b;
         }
         self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
         self.cpu_ops += 1;
     }
 
-    // ========================================================================
-    // Statistics
-    // ========================================================================
+    pub fn vector_clamp(
+        &mut self, a: &mut [f32], min_val: f32, max_val: f32,
+    ) {
+        #[cfg(feature = "cuda")]
+        if let Some(ref mgr) = self.kernel_mgr {
+            let n = a.len() as i32;
+            let upload_start = Instant::now();
+            let a_key = format!("vc_a_{}", a.len());
 
-    pub fn print_stats(&self) {
-        println!("  Accelerator: {}", self.backend.name());
-        println!("  GPU ops: {} | CPU ops: {}", self.gpu_ops, self.cpu_ops);
-        if self.total_gpu_time_ms > 0.0 {
-            println!("  GPU time: {:.2}s", self.total_gpu_time_ms / 1000.0);
+            if let Some(a_gpu) = self.upload_to_buffer(&a_key, a) {
+                let upload_time = upload_start.elapsed();
+                self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
+
+                let kernel_start = Instant::now();
+                let mut a_gpu_mut = a_gpu;
+                match mgr.launch_vector_clamp(&mut a_gpu_mut, min_val, max_val, n) {
+                    Ok(()) => {
+                        self.batch_profile.kernel_launch_count += 1;
+                        self.batch_profile.kernel_names.push("vector_clamp_kernel".to_string());
+                        let kernel_time = kernel_start.elapsed();
+                        self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
+
+                        let sync_start = Instant::now();
+                        match mgr.sync() {
+                            Ok(()) => {
+                                let sync_time = sync_start.elapsed();
+                                self.batch_profile.gpu_sync_ms += sync_time.as_millis() as f64;
+                                self.batch_profile.sync_count += 1;
+
+                                let download_start = Instant::now();
+                                if let Some(a_cpu) = self.copy_to_cpu(&a_gpu_mut) {
+                                    a.copy_from_slice(&a_cpu);
+                                    let elem_bytes = std::mem::size_of::<f32>() as u64;
+                                    self.batch_profile.gpu_mem_copied_d2h += a.len() as u64 * elem_bytes;
+                                    self.batch_profile.memcpy_count += 1;
+                                }
+                                let download_time = download_start.elapsed();
+                                self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
+
+                                self.return_buffer(a_key, a_gpu_mut);
+
+                                let start = Instant::now();
+                                self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
+                                self.gpu_ops += 1;
+                                return;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
         }
-        if self.total_cpu_time_ms > 0.0 {
-            println!("  CPU time: {:.2}s", self.total_cpu_time_ms / 1000.0);
+
+        // CPU fallback
+        let start = Instant::now();
+        for i in 0..a.len() {
+            a[i] = a[i].clamp(min_val, max_val);
         }
-        let total_ops = self.gpu_ops + self.cpu_ops;
-        let total_time = self.total_gpu_time_ms + self.total_cpu_time_ms;
-        if total_ops > 0 {
-            println!("  Avg time/op: {:.2}ms", total_time / total_ops as f64);
+        self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
+        self.cpu_ops += 1;
+    }
+
+    pub fn process_cores_batch(
+        &mut self, cores: &mut [crate::core::NovaCore],
+        pulses_content: &mut [Vec<f32>],
+        pulses_entropy: &mut [f32],
+        pulses_weight: &mut [f32],
+    ) {
+        #[cfg(feature = "cuda")]
+        if let Some(ref mgr) = self.kernel_mgr {
+            let preprocess_start = Instant::now();
+            let num_pulses = pulses_content.len();
+            let num_cores = cores.len();
+            if num_pulses == 0 || num_cores == 0 { return; }
+            let dim = pulses_content[0].len();
+            let d_state = cores[0].ssm.d_state;
+            let memory_size = cores[0].memory.len();
+
+            let flat_size = num_pulses * dim;
+            let mut flat_content = vec![0.0f32; flat_size];
+            for (i, content) in pulses_content.iter().enumerate() {
+                let len = content.len().min(dim);
+                for j in 0..len { flat_content[i * dim + j] = content[j]; }
+            }
+            let preprocess_time = preprocess_start.elapsed();
+            self.batch_profile.cpu_preprocess_ms += preprocess_time.as_millis() as f64;
+
+            for core_idx in 0..num_cores {
+                let core = &cores[core_idx];
+                let upload_start = Instant::now();
+
+                let content_key = format!("pc_content_{}_{}", core_idx, flat_size);
+                let entropy_key = format!("pc_entropy_{}_{}", core_idx, pulses_entropy.len());
+                let weight_key = format!("pc_weight_{}_{}", core_idx, pulses_weight.len());
+                let mem_key = format!("pc_mem_{}_{}", core_idx, core.memory.len());
+                let istate_key = format!("pc_istate_{}_{}", core_idx, core.internal_state.len());
+                let gate_key = format!("pc_gate_{}_{}", core_idx, core.gate.len());
+                let ssm_a_key = format!("pc_ssm_a_{}_{}", core_idx, core.ssm.a.len());
+                let ssm_b_key = format!("pc_ssm_b_{}_{}", core_idx, core.ssm.b.len());
+                let ssm_c_key = format!("pc_ssm_c_{}_{}", core_idx, core.ssm.c.len());
+                let ssm_h_key = format!("pc_ssm_h_{}_{}", core_idx, core.ssm.h.len());
+                let ssm_delta_key = format!("pc_ssm_delta_{}_{}", core_idx, core.ssm.delta.len());
+                let ssm_db_key = format!("pc_ssm_db_{}_{}", core_idx, core.ssm.delta_bias.len());
+                let ssm_d_key = format!("pc_ssm_d_{}_{}", core_idx, core.ssm.d.len());
+
+                if let (Some(content_gpu), Some(entropy_gpu), Some(weight_gpu),
+                        Some(mem_gpu), Some(istate_gpu), Some(gate_gpu),
+                        Some(ssm_a_gpu), Some(ssm_b_gpu), Some(ssm_c_gpu),
+                        Some(ssm_h_gpu), Some(ssm_delta_gpu), Some(ssm_db_gpu),
+                        Some(ssm_d_gpu)) = (
+                    self.upload_to_buffer(&content_key, &flat_content),
+                    self.upload_to_buffer(&entropy_key, pulses_entropy),
+                    self.upload_to_buffer(&weight_key, pulses_weight),
+                    self.upload_to_buffer(&mem_key, &core.memory),
+                    self.upload_to_buffer(&istate_key, &core.internal_state),
+                    self.upload_to_buffer(&gate_key, &core.gate),
+                    self.upload_to_buffer(&ssm_a_key, &core.ssm.a),
+                    self.upload_to_buffer(&ssm_b_key, &core.ssm.b),
+                    self.upload_to_buffer(&ssm_c_key, &core.ssm.c),
+                    self.upload_to_buffer(&ssm_h_key, &core.ssm.h),
+                    self.upload_to_buffer(&ssm_delta_key, &core.ssm.delta),
+                    self.upload_to_buffer(&ssm_db_key, &core.ssm.delta_bias),
+                    self.upload_to_buffer(&ssm_d_key, &core.ssm.d),
+                ) {
+                    let upload_time = upload_start.elapsed();
+                    self.batch_profile.gpu_upload_ms += upload_time.as_millis() as f64;
+
+                    let kernel_start = Instant::now();
+                    let mut content_gpu_mut = content_gpu;
+                    let mut entropy_gpu_mut = entropy_gpu;
+                    let mut weight_gpu_mut = weight_gpu;
+                    let mut ssm_h_gpu_mut = ssm_h_gpu;
+
+                    if self.use_async_streams {
+                        if let Some(async_stream) = self.next_async_stream() {
+                            let _ = mgr.launch_core_process_async(
+                                async_stream,
+                                &mut content_gpu_mut, &mut entropy_gpu_mut, &mut weight_gpu_mut,
+                                &mem_gpu, &istate_gpu, &gate_gpu,
+                                &ssm_a_gpu, &ssm_b_gpu, &ssm_c_gpu, &mut ssm_h_gpu_mut,
+                                &ssm_delta_gpu, &ssm_db_gpu, &ssm_d_gpu,
+                                num_pulses as i32, dim as i32, num_cores as i32,
+                                memory_size as i32, d_state as i32,
+                            );
+                        }
+                    }
+
+                    match mgr.launch_core_process(
+                        &mut content_gpu_mut, &mut entropy_gpu_mut, &mut weight_gpu_mut,
+                        &mem_gpu, &istate_gpu, &gate_gpu,
+                        &ssm_a_gpu, &ssm_b_gpu, &ssm_c_gpu, &mut ssm_h_gpu_mut,
+                        &ssm_delta_gpu, &ssm_db_gpu, &ssm_d_gpu,
+                        num_pulses as i32, dim as i32, num_cores as i32,
+                        memory_size as i32, d_state as i32,
+                    ) {
+                        Ok(()) => {
+                            self.batch_profile.kernel_launch_count += 1;
+                            self.batch_profile.kernel_names.push("core_process_kernel".to_string());
+                            let kernel_time = kernel_start.elapsed();
+                            self.batch_profile.gpu_kernel_ms += kernel_time.as_millis() as f64;
+
+                            let sync_start = Instant::now();
+                            match mgr.sync() {
+                                Ok(()) => {
+                                    let sync_time = sync_start.elapsed();
+                                    self.batch_profile.gpu_sync_ms += sync_time.as_millis() as f64;
+                                    self.batch_profile.sync_count += 1;
+
+                                    let download_start = Instant::now();
+                                    let mut download_ok = true;
+                                    let elem_bytes = std::mem::size_of::<f32>() as u64;
+
+                                    if let Some(content_cpu) = self.copy_to_cpu(&content_gpu_mut) {
+                                        for i in 0..num_pulses {
+                                            let len = pulses_content[i].len().min(dim);
+                                            for j in 0..len {
+                                                pulses_content[i][j] = content_cpu[i * dim + j];
+                                            }
+                                        }
+                                        self.batch_profile.gpu_mem_copied_d2h += flat_size as u64 * elem_bytes;
+                                        self.batch_profile.memcpy_count += 1;
+                                    } else { download_ok = false; }
+
+                                    if let Some(entropy_cpu) = self.copy_to_cpu(&entropy_gpu_mut) {
+                                        pulses_entropy.copy_from_slice(&entropy_cpu);
+                                        self.batch_profile.gpu_mem_copied_d2h += pulses_entropy.len() as u64 * elem_bytes;
+                                        self.batch_profile.memcpy_count += 1;
+                                    } else { download_ok = false; }
+
+                                    if let Some(weight_cpu) = self.copy_to_cpu(&weight_gpu_mut) {
+                                        pulses_weight.copy_from_slice(&weight_cpu);
+                                        self.batch_profile.gpu_mem_copied_d2h += pulses_weight.len() as u64 * elem_bytes;
+                                        self.batch_profile.memcpy_count += 1;
+                                    } else { download_ok = false; }
+
+                                    let download_time = download_start.elapsed();
+                                    self.batch_profile.gpu_download_ms += download_time.as_millis() as f64;
+
+                                    self.return_buffer(content_key, content_gpu_mut);
+                                    self.return_buffer(entropy_key, entropy_gpu_mut);
+                                    self.return_buffer(weight_key, weight_gpu_mut);
+                                    self.return_buffer(mem_key, mem_gpu);
+                                    self.return_buffer(istate_key, istate_gpu);
+                                    self.return_buffer(gate_key, gate_gpu);
+                                    self.return_buffer(ssm_a_key, ssm_a_gpu);
+                                    self.return_buffer(ssm_b_key, ssm_b_gpu);
+                                    self.return_buffer(ssm_c_key, ssm_c_gpu);
+                                    self.return_buffer(ssm_h_key, ssm_h_gpu_mut);
+                                    self.return_buffer(ssm_delta_key, ssm_delta_gpu);
+                                    self.return_buffer(ssm_db_key, ssm_db_gpu);
+                                    self.return_buffer(ssm_d_key, ssm_d_gpu);
+
+                                    if download_ok {
+                                        let start = Instant::now();
+                                        self.total_gpu_time_ms += start.elapsed().as_millis() as f64;
+                                        self.gpu_ops += 1;
+                                        return;
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
         }
+
+        // CPU fallback
+        let start = Instant::now();
+        
+        // Convert separate arrays into NovaPulse objects
+        let mut pulses: Vec<crate::pulse::NovaPulse> = Vec::with_capacity(pulses_content.len());
+        for i in 0..pulses_content.len() {
+            let dim = pulses_content[i].len();
+            let mut pulse = crate::pulse::NovaPulse::new(dim, i);
+            pulse.content = pulses_content[i].clone();
+            pulse.semantic_content = pulses_content[i].clone();
+            if i < pulses_entropy.len() {
+                pulse.entropy = pulses_entropy[i];
+            }
+            if i < pulses_weight.len() {
+                pulse.weight = pulses_weight[i];
+            }
+            pulses.push(pulse);
+        }
+        
+        for core in cores.iter_mut() {
+            core.process(&mut pulses);
+        }
+        
+        // Copy back the updated values
+        for i in 0..pulses_content.len() {
+            if i < pulses.len() {
+                let pulse = &pulses[i];
+                let len = pulses_content[i].len().min(pulse.content.len());
+                pulses_content[i][..len].copy_from_slice(&pulse.content[..len]);
+                if i < pulses_entropy.len() {
+                    pulses_entropy[i] = pulse.entropy;
+                }
+                if i < pulses_weight.len() {
+                    pulses_weight[i] = pulse.weight;
+                }
+            }
+        }
+        
+        self.total_cpu_time_ms += start.elapsed().as_millis() as f64;
+        self.cpu_ops += 1;
     }
 }
 
 // ============================================================================
-// Global Accelerator Singleton
+// Global Accelerator Functions
 // ============================================================================
 
-use std::sync::Mutex;
-
-/// Global accelerator instance, initialized once at startup.
-/// Use `init_global_accelerator()` to initialize, then access via `get_accelerator()`.
-static GLOBAL_ACCELERATOR: once_cell::sync::OnceCell<Mutex<NovaAccelerator>> = once_cell::sync::OnceCell::new();
-
-/// Initialize the global accelerator singleton.
-/// Call this once at startup (e.g., in main() after thread pool init).
-/// Returns true if GPU acceleration is available and initialized.
-pub fn init_global_accelerator() -> bool {
-    let accelerator = NovaAccelerator::auto_detect();
-    let is_gpu = accelerator.is_gpu();
-    let _ = GLOBAL_ACCELERATOR.set(Mutex::new(accelerator));
-    if is_gpu {
-        eprintln!("  ✅ GPU acceleration ACTIVE");
-    } else {
-        eprintln!("  ⚠️  GPU not available, using CPU (Rayon)");
-    }
-    is_gpu
+/// Initialize the global accelerator (called from main.rs)
+pub fn init_global_accelerator() {
+    // This function is called from main.rs to initialize the accelerator
+    // The actual initialization happens when NovaAccelerator::auto_detect() is called
+    // We just print a message for now
+    let backend = auto_detect_backend();
+    println!("🚀 Accelerator initialized: {}", backend.name());
 }
 
-/// Get a reference to the global accelerator.
-/// Panics if `init_global_accelerator()` has not been called yet.
-pub fn get_accelerator() -> std::sync::MutexGuard<'static, NovaAccelerator> {
-    GLOBAL_ACCELERATOR
-        .get()
-        .expect("Global accelerator not initialized. Call init_global_accelerator() first.")
-        .lock()
-        .unwrap()
-}
-
-/// Check if GPU acceleration is available.
-/// Returns false if accelerator hasn't been initialized yet.
-pub fn is_gpu_available() -> bool {
-    GLOBAL_ACCELERATOR
-        .get()
-        .map(|m| m.lock().unwrap().is_gpu())
-        .unwrap_or(false)
-}
-
-/// Get the backend name string (e.g., "CUDA (NVIDIA GPU)", "CPU (Rayon)").
-/// Returns "Unknown" if accelerator hasn't been initialized.
+/// Get the backend name as a string
 pub fn get_backend_name() -> String {
-    GLOBAL_ACCELERATOR
-        .get()
-        .map(|m| m.lock().unwrap().backend.name().to_string())
-        .unwrap_or_else(|| "Unknown".to_string())
+    let backend = auto_detect_backend();
+    backend.name().to_string()
 }
 
-/// Get accelerator statistics as a formatted string.
-/// Returns "Not initialized" if accelerator hasn't been initialized.
-pub fn get_accelerator_stats() -> String {
-    GLOBAL_ACCELERATOR
-        .get()
-        .map(|m| {
-            let acc = m.lock().unwrap();
-            format!(
-                "Backend: {} | GPU ops: {} | CPU ops: {} | GPU time: {:.2}s | CPU time: {:.2}s",
-                acc.backend.name(),
-                acc.gpu_ops,
-                acc.cpu_ops,
-                acc.total_gpu_time_ms / 1000.0,
-                acc.total_cpu_time_ms / 1000.0,
-            )
-        })
-        .unwrap_or_else(|| "Not initialized".to_string())
+/// Check if GPU is available
+pub fn is_gpu_available() -> bool {
+    let backend = auto_detect_backend();
+    backend.is_gpu()
+}
+
+/// Get the accelerator instance
+pub fn get_accelerator() -> NovaAccelerator {
+    NovaAccelerator::auto_detect()
 }
