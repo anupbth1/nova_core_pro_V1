@@ -12,46 +12,7 @@ mod benchmark;
 mod trainer;
 mod dataset;
 mod model;
-#[cfg(feature = "cuda")]
 mod cuda;
-#[cfg(not(feature = "cuda"))]
-/// Stub for CPU-only builds. Provides the same public API as the real CUDA module,
-/// but all functions return CPU-only fallback values.
-#[allow(dead_code, unused_variables)]
-mod cuda {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use once_cell::sync::OnceCell;
-    
-    static GLOBAL_ACCELERATOR: OnceCell<AcceleratorStub> = OnceCell::new();
-    
-    pub struct CumulativeProfile {
-        pub total_examples: u64,
-    }
-    
-    pub struct AcceleratorStub {
-        pub cumulative_profile: CumulativeProfile,
-    }
-    
-    impl AcceleratorStub {
-        pub fn new() -> Self { AcceleratorStub { cumulative_profile: CumulativeProfile { total_examples: 0 } } }
-        pub fn is_kernels_ready(&self) -> bool { false }
-        pub fn reset_batch_profile(&mut self) {}
-        pub fn finalize_batch_profile(&mut self, _batch: usize, _size: usize) {}
-        pub fn print_cumulative_profile(&self) {}
-        pub fn process_cores_batch(&mut self, _cores: &mut [crate::core::NovaCore], _pulses_content: &mut Vec<Vec<f32>>, _pulses_entropy: &mut Vec<f32>, _pulses_weight: &mut Vec<f32>) {}
-        pub fn field_update(&mut self, _pulses_content: &[Vec<f32>], _pulses_weight: &[f32], _field_state: &mut [f32], _field_momentum: &mut [f32], _lr: f32, _diff: f32) {}
-    }
-    
-    pub struct BatchProfile {
-        pub total_ms: f64,
-    }
-    
-    pub fn init_global_accelerator() {}
-    pub fn is_gpu_available() -> bool { false }
-    pub fn get_accelerator() -> AcceleratorStub { AcceleratorStub::new() }
-    pub fn get_backend_name() -> String { "CPU (no CUDA feature)".to_string() }
-}
 mod knowledge;
 mod optimizer;
 mod context;
