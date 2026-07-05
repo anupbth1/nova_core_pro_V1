@@ -118,7 +118,7 @@ impl NovaAccelerator {
                 if ret == cudarc::driver::sys::CUresult::CUDA_SUCCESS && count > 0 {
                     acc.gpu_available = true;
                     acc.backend_name = format!("CUDA ({} device(s))", count);
-                    acc.kernels_ready = true;
+                    acc.kernels_ready = false; // No PTX kernels compiled — use CPU fallback
                     acc.device_index = Some(0);
                 }
             }
