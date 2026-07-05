@@ -111,17 +111,15 @@ impl NovaAccelerator {
         // Try CUDA via cudarc
         #[cfg(feature = "cuda")]
         unsafe {
-            let result = cudarc::driver::result::result_from_error(
-                cudarc::driver::sys::cuInit(0)
-            );
-            if result.is_ok() {
+            let init_ret = cudarc::driver::sys::cuInit(0);
+            if init_ret == cudarc::driver::sys::CUresult::CUDA_SUCCESS {
                 let mut count: i32 = 0;
                 let ret = cudarc::driver::sys::cuDeviceGetCount(&mut count as *mut i32);
                 if ret == cudarc::driver::sys::CUresult::CUDA_SUCCESS && count > 0 {
                     acc.gpu_available = true;
                     acc.backend_name = format!("CUDA ({} device(s))", count);
-                    acc.kernels_ready = true; // Will use CPU fallback internally
-                    acc.device_index = Some(0); // Use first device
+                    acc.kernels_ready = true;
+                    acc.device_index = Some(0);
                 }
             }
         }
