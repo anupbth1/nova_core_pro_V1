@@ -1,495 +1,435 @@
-//! Nova SSM - State Space Model Module
+//! Nova SSM - State Space Model with GLU Gating and LayerNorm
 //!
-//! OPTIMIZED V2: Flat memory layout for SIMD auto-vectorization.
-//! All matrices are stored as flat Vec<f32> with stride-based access.
-//! This enables Rustc to auto-vectorize with AVX2/FMA (4-8x speedup).
+//! Pure Rust implementation of Mamba's selective scan + Gated Linear Unit.
+//! All matrices use flat Vec<f32> with stride-based indexing for
+//! cache-friendly SIMD auto-vectorization.
 //!
-//! Pure Rust implementation of Mamba's selective scan and RWKV's time-mixing.
-//! NO external dependencies - uses only Vec<f32> operations.
-//!
-//! Key insight: Flat arrays + stride = cache-friendly + auto-vectorizable.
+//! Architecture: LayerNorm → Selective Scan → GLU → Residual
+//! All operations are O(n), no attention, Transformer-free.
 
 use std::f32::consts::E;
 use serde::{Serialize, Deserialize};
+use rand::Rng;
+
+// ============================================================================
+// Activation Functions
+// ============================================================================
+
+/// Softplus: log(1 + exp(x))
+#[inline(always)]
+pub fn softplus(x: f32) -> f32 {
+    if x > 20.0 { x }
+    else if x < -20.0 { 0.0 }
+    else { (1.0 + x.exp()).ln() }
+}
+
+/// SiLU (Swish): x * sigmoid(x)
+#[inline(always)]
+pub fn silu(x: f32) -> f32 {
+    x / (1.0 + (-x).exp())
+}
+
+/// Sigmoid: 1 / (1 + exp(-x))
+#[inline(always)]
+pub fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+#[inline(always)]
+pub fn gelu(x: f32) -> f32 {
+    const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
+    0.5 * x * (1.0 + (SQRT_2_OVER_PI * (x + 0.044715 * x * x * x)).tanh())
+}
+
+/// RMS Normalization: x / sqrt(mean(x^2) + eps) * weight
+#[inline(always)]
+pub fn rms_norm(x: &mut [f32], weight: &[f32], eps: f32) {
+    let sum_sq: f32 = x.iter().map(|&v| v * v).sum::<f32>() / x.len() as f32;
+    let rms = (sum_sq + eps).sqrt().recip();
+    for i in 0..x.len() {
+        x[i] = x[i] * rms * weight[i];
+    }
+}
+
+/// Layer Normalization: (x - mean) / sqrt(var + eps) * weight + bias
+#[inline(always)]
+pub fn layer_norm(x: &mut [f32], weight: &[f32], bias: &[f32], eps: f32) {
+    let n = x.len() as f32;
+    let mean: f32 = x.iter().sum::<f32>() / n;
+    let var: f32 = x.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / n;
+    let std_inv = (var + eps).sqrt().recip();
+    for i in 0..x.len() {
+        x[i] = (x[i] - mean) * std_inv * weight[i] + bias[i];
+    }
+}
+
+// ============================================================================
+// Vector Operations (SIMD-Friendly)
+// ============================================================================
+
+/// Element-wise addition: a + b into result
+#[inline]
+pub fn add_into(result: &mut [f32], a: &[f32]) {
+    for i in 0..result.len().min(a.len()) {
+        result[i] += a[i];
+    }
+}
+
+/// Element-wise multiply: a * b into result
+#[inline]
+pub fn mul_into(result: &mut [f32], a: &[f32]) {
+    for i in 0..result.len().min(a.len()) {
+        result[i] *= a[i];
+    }
+}
+
+/// Element-wise copy: src -> dst
+#[inline]
+pub fn copy_into(dst: &mut [f32], src: &[f32]) {
+    let n = dst.len().min(src.len());
+    dst[..n].copy_from_slice(&src[..n]);
+}
+
+// ============================================================================
+// GLU (Gated Linear Unit) Module
+// ============================================================================
+
+/// Gated Linear Unit parameters for a single layer.
+/// Output = SiLU(gate_proj(x)) * up_proj(x)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GluGate {
+    /// Input dimension
+    pub dim: usize,
+    /// Hidden dimension (typically dim * 4 for FFN expansion)
+    pub hidden_dim: usize,
+    /// Gate projection weight [hidden_dim x dim] (flat)
+    pub gate_weight: Vec<f32>,
+    /// Gate projection bias [hidden_dim]
+    pub gate_bias: Vec<f32>,
+    /// Up projection weight [hidden_dim x dim] (flat)
+    pub up_weight: Vec<f32>,
+    /// Up projection bias [hidden_dim]
+    pub up_bias: Vec<f32>,
+    /// Down projection weight [dim x hidden_dim] (flat)
+    pub down_weight: Vec<f32>,
+    /// Down projection bias [dim]
+    pub down_bias: Vec<f32>,
+    /// LayerNorm weight for pre-normalization
+    pub norm_weight: Vec<f32>,
+    /// LayerNorm bias for pre-normalization
+    pub norm_bias: Vec<f32>,
+}
+
+impl GluGate {
+    /// Create new GLU with Xavier initialization
+    pub fn new(dim: usize, hidden_dim: usize) -> Self {
+        let scale_gate = (2.0 / (dim as f32)).sqrt();
+        let scale_down = (2.0 / (hidden_dim as f32)).sqrt();
+        let mut rng = rand::thread_rng();
+
+        let gate_weight: Vec<f32> = (0..hidden_dim * dim)
+            .map(|_| rng.gen_range(-scale_gate..scale_gate))
+            .collect();
+        let gate_bias = vec![0.0; hidden_dim];
+
+        let up_weight: Vec<f32> = (0..hidden_dim * dim)
+            .map(|_| rng.gen_range(-scale_gate..scale_gate))
+            .collect();
+        let up_bias = vec![0.0; hidden_dim];
+
+        let down_weight: Vec<f32> = (0..dim * hidden_dim)
+            .map(|_| rng.gen_range(-scale_down..scale_down))
+            .collect();
+        let down_bias = vec![0.0; dim];
+
+        let norm_weight = vec![1.0; dim];
+        let norm_bias = vec![0.0; dim];
+
+        GluGate {
+            dim,
+            hidden_dim,
+            gate_weight,
+            gate_bias,
+            up_weight,
+            up_bias,
+            down_weight,
+            down_bias,
+            norm_weight,
+            norm_bias,
+        }
+    }
+
+    /// Forward pass: LayerNorm → SiLU(W_g * x) * (W_u * x) → W_d * output
+    /// Input and output are both [dim] vectors
+    pub fn forward(&self, x: &mut [f32], temp_buffer: &mut [f32]) {
+        debug_assert_eq!(x.len(), self.dim);
+        debug_assert!(temp_buffer.len() >= self.hidden_dim);
+
+        // 1. Pre-normalization
+        layer_norm(x, &self.norm_weight, &self.norm_bias, 1e-5);
+
+        let hidden = &mut temp_buffer[..self.hidden_dim];
+
+        // 2. Gate projection: gate = SiLU(W_g * x + b_g)
+        for i in 0..self.hidden_dim {
+            let mut sum = self.gate_bias[i];
+            for j in 0..self.dim {
+                sum += self.gate_weight[i * self.dim + j] * x[j];
+            }
+            hidden[i] = silu(sum);
+        }
+
+        // 3. Up projection: up = W_u * x + b_u
+        for i in 0..self.hidden_dim {
+            let mut sum = self.up_bias[i];
+            for j in 0..self.dim {
+                sum += self.up_weight[i * self.dim + j] * x[j];
+            }
+            hidden[i] *= sum; // gate * up (SiLU * linear)
+        }
+
+        // 4. Down projection: x = W_d * gate_up + b_d
+        let mut output = vec![0.0; self.dim];
+        for i in 0..self.dim {
+            let mut sum = self.down_bias[i];
+            for j in 0..self.hidden_dim {
+                sum += self.down_weight[i * self.hidden_dim + j] * hidden[j];
+            }
+            output[i] = sum;
+        }
+
+        // 5. Residual connection
+        for i in 0..self.dim {
+            x[i] = x[i] + output[i];
+        }
+    }
+
+    /// Get total number of parameters
+    pub fn num_params(&self) -> usize {
+        self.gate_weight.len() + self.gate_bias.len()
+            + self.up_weight.len() + self.up_bias.len()
+            + self.down_weight.len() + self.down_bias.len()
+            + self.norm_weight.len() + self.norm_bias.len()
+    }
+}
 
 // ============================================================================
 // StateSpace Parameters (Flat Memory Layout)
 // ============================================================================
 
-/// State Space Model parameters for a single core.
-///
-/// OPTIMIZED: All matrices use flat Vec<f32> with stride-based indexing:
-///   element[i][j] = data[i * stride + j]
-///
-/// This gives:
-/// 1. Single allocation per matrix (no pointer chasing)
-/// 2. Cache-friendly sequential access
-/// 3. Auto-vectorization by rustc
-/// 4. Easy to port to GPU later
+/// State Space Model parameters for selective scan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSpace {
     /// State dimension (N in Mamba paper, typically 16)
     pub d_state: usize,
-    
-    /// Inner dimension (d_inner = d_model * expand, typically d_model * 2)
+    /// Inner dimension (d_inner = dim, typically same as embedding dim)
     pub d_inner: usize,
-    
+
     // ===== Flat matrices (d_inner × d_state) stored as [d_inner * d_state] =====
-    
-    /// A matrix - state transition (always negative)
-    /// Flat: a[i * d_state + j]
-    pub a: Vec<f32>,
-    
-    /// A_log (log of A, used for numerical stability)
-    /// Flat: a_log[i * d_state + j]
-    pub a_log: Vec<f32>,
-    
-    /// B matrix - input projection
-    /// Flat: b[i * d_state + j]
-    pub b: Vec<f32>,
-    
-    /// C matrix - output projection
-    /// Flat: c[i * d_state + j]
-    pub c: Vec<f32>,
-    
-    /// Hidden state h(t) — the SSM memory
-    /// Flat: h[i * d_state + j]
-    pub h: Vec<f32>,
-    
-    /// OPTIMIZED: Pre-allocated output buffer to avoid per-call allocations
-    pub output_buf: Vec<f32>,
-    
+    pub a_log: Vec<f32>,    // A_log = log(diag(-exp(A_log)))
+    pub b: Vec<f32>,        // B projection
+    pub c: Vec<f32>,        // C projection
+    pub h: Vec<f32>,        // Hidden state h(t) — the SSM memory
+    pub output_buf: Vec<f32>, // Pre-allocated output buffer
+
     // ===== Vectors (d_inner,) =====
-    
-    /// Δ (delta) projection weights
-    pub delta: Vec<f32>,
-    
-    /// Δ (delta) bias
-    pub delta_bias: Vec<f32>,
-    
-    /// D vector - skip connection
-    pub d: Vec<f32>,
-    
-    /// RWKV time-mix parameters
-    pub time_mix_x: Vec<f32>,
-    pub time_mix_w: Vec<f32>,
-    pub time_mix_key: Vec<f32>,
-    pub time_mix_value: Vec<f32>,
-    pub time_mix_receptance: Vec<f32>,
-    
-    /// Previous input for RWKV time-mixing
-    pub prev_x: Vec<f32>,
+    pub delta: Vec<f32>,        // Δ projection weights
+    pub delta_bias: Vec<f32>,   // Δ bias
+    pub d: Vec<f32>,            // D vector - skip connection
+
+    // ===== LayerNorm for SSM input =====
+    pub ssm_norm_weight: Vec<f32>,
+    pub ssm_norm_bias: Vec<f32>,
+
+    // ===== GLU module (applied after SSM) =====
+    pub glu: Option<GluGate>,
 }
 
 impl StateSpace {
     /// Create a new StateSpace with given dimensions
-    pub fn new(d_inner: usize, d_state: usize) -> Self {
+    pub fn new(dim: usize) -> Self {
+        let d_state = 16; // Standard Mamba state dimension
+        let d_inner = dim;
         let total = d_inner * d_state;
-        
-        // Initialize A_log as log of arange(1, d_state+1) repeated for d_inner
+
+        // A_log = log(arange(1, d_state+1)) repeated for d_inner
         let mut a_log = Vec::with_capacity(total);
         for _ in 0..d_inner {
             for j in 0..d_state {
                 a_log.push((j as f32 + 1.0).ln());
             }
         }
-        
-        // A = -exp(A_log) — always negative for stability
-        let mut a = Vec::with_capacity(total);
-        for &val in &a_log {
-            a.push(-val.exp());
-        }
-        
-        // B and C initialized small random
+
+        // B and C initialized to small values
         let b = vec![0.01; total];
         let c = vec![0.01; total];
-        
+
         // D = ones (skip connection)
         let d = vec![1.0; d_inner];
-        
+
         // Delta initialized small positive
         let delta = vec![0.1; d_inner];
         let delta_bias = vec![0.0; d_inner];
-        
+
         // Hidden state = zeros
         let h = vec![0.0; total];
-        
-        // RWKV time-mix parameters (initialized for no mixing)
-        let time_mix_x = vec![0.0; d_inner];
-        let time_mix_w = vec![0.0; d_inner];
-        let time_mix_key = vec![0.0; d_inner];
-        let time_mix_value = vec![0.0; d_inner];
-        let time_mix_receptance = vec![0.0; d_inner];
-        
-        let prev_x = vec![0.0; d_inner];
-        
+
         // Pre-allocate output buffer
         let output_buf = vec![0.0; d_inner];
-        
+
+        // SSM LayerNorm
+        let ssm_norm_weight = vec![1.0; d_inner];
+        let ssm_norm_bias = vec![0.0; d_inner];
+
+        // GLU module (optional, initially None)
+        let glu = None;
+
         Self {
             d_state,
             d_inner,
-            a,
             a_log,
             b,
             c,
-            d,
             h,
             output_buf,
             delta,
             delta_bias,
-            time_mix_x,
-            time_mix_w,
-            time_mix_key,
-            time_mix_value,
-            time_mix_receptance,
-            prev_x,
+            d,
+            ssm_norm_weight,
+            ssm_norm_bias,
+            glu,
         }
     }
-    
+
+    /// Create with GLU enabled (SSM → GLU stack)
+    pub fn new_with_glu(dim: usize, glu_hidden_mult: usize) -> Self {
+        let mut ssm = Self::new(dim);
+        ssm.glu = Some(GluGate::new(dim, dim * glu_hidden_mult));
+        ssm
+    }
+
     /// Reset hidden state (for new sequences)
     pub fn reset(&mut self) {
         self.h.fill(0.0);
-        self.prev_x.fill(0.0);
     }
-    
-    /// Load SSM parameters from projected weights (flat memory layout)
-    pub fn load_from_projection(
-        &mut self,
-        delta: Vec<f32>,
-        delta_bias: Vec<f32>,
-        a_log: Vec<f32>,
-        b: Vec<f32>,
-        c: Vec<f32>,
-        d: Vec<f32>,
-    ) {
-        if delta.len() == self.d_inner {
-            self.delta = delta;
+
+    /// Full forward pass: LayerNorm → Selective Scan → GLU → Residual
+    /// x: input vector of length dim
+    /// buffer: temporary workspace (must have length >= hidden_dim of GLU)
+    pub fn forward(&mut self, x: &mut [f32], buffer: &mut [f32]) {
+        let dim = self.d_inner;
+
+        // Save input for residual connection
+        let residual = x.to_vec();
+
+        // 1. Selective scan step (includes internal LayerNorm)
+        let output = self.selective_scan_step(x, true);
+        for i in 0..dim.min(output.len()) {
+            x[i] = output[i];
         }
-        if delta_bias.len() == self.d_inner {
-            self.delta_bias = delta_bias;
-        }
-        
-        let ds = self.d_state;
-        let di = self.d_inner;
-        let total = di * ds;
-        
-        // Flat arrays: just copy directly
-        if a_log.len() == total {
-            self.a_log.copy_from_slice(&a_log);
-            // Recompute A = -exp(A_log)
-            for i in 0..total {
-                self.a[i] = -a_log[i].exp();
+
+        // 2. GLU (if enabled) — includes internal LayerNorm and residual
+        if let Some(ref glu) = self.glu {
+            glu.forward(x, buffer);
+        } else {
+            // Without GLU, just add residual
+            for i in 0..dim {
+                x[i] = x[i] + residual[i];
             }
         }
-        if b.len() == total {
-            self.b.copy_from_slice(&b);
+    }
+
+    /// Selective scan step (Mamba-style discretized SSM).
+    /// Applies: y = C * h(t) + D * x(t)
+    /// where h(t) = exp(Δ*A) * h(t-1) + Δ*B*x(t)
+    pub fn selective_scan_step(&mut self, x: &[f32], normalize: bool) -> &[f32] {
+        let d_inner = self.d_inner;
+        let d_state = self.d_state;
+
+        if x.len() < d_inner {
+            let min_len = x.len().min(d_inner);
+            for i in 0..min_len {
+                self.output_buf[i] = x[i];
+            }
+            return &self.output_buf[..d_inner];
         }
-        if c.len() == total {
-            self.c.copy_from_slice(&c);
+
+        // Pre-normalize input if requested
+        let mut normalized = x.to_vec();
+        if normalize {
+            layer_norm(&mut normalized, &self.ssm_norm_weight, &self.ssm_norm_bias, 1e-5);
         }
-        if d.len() == self.d_inner {
-            self.d = d;
+
+        let x_ref = if normalize { &normalized } else { x };
+
+        // Compute Δ = softplus(W_delta * x + delta_bias)
+        // Simplified: use delta * x[i] + delta_bias[i]
+        let delta_soft: Vec<f32> = self.delta.iter()
+            .zip(self.delta_bias.iter())
+            .map(|(&d, &b)| softplus(d * x_ref[0] + b))
+            .collect();
+
+        // For each channel in d_inner:
+        for i in 0..d_inner {
+            let base = i * d_state;
+
+            // ΔA = exp(Δ * A) discretization
+            // A = -exp(A_log), so ΔA = exp(Δ * (-exp(A_log)))
+            let mut h_out = [0.0f32; 16]; // Max d_state
+            let _ds = d_state.min(16);
+
+            for j in 0..d_state {
+                let delta_a = (-self.a_log[base + j].exp() * delta_soft[i]).exp();
+                let delta_b = delta_soft[i] * self.b[base + j];
+                // h(t) = exp(Δ*A) * h(t-1) + Δ*B*x(t)
+                h_out[j] = delta_a * self.h[base + j] + delta_b * x_ref[i];
+            }
+
+            // y = C * h(t) + D * x(t)
+            let mut y = 0.0f32;
+            for j in 0..d_state {
+                y += self.c[base + j] * h_out[j];
+            }
+            y += self.d[i] * x_ref[i];
+
+            self.output_buf[i] = y;
+
+            // Update hidden state
+            for j in 0..d_state {
+                self.h[base + j] = h_out[j];
+            }
         }
+
+        &self.output_buf[..d_inner]
     }
-}
 
-// ============================================================================
-// Core SSM Operations (SIMD-Friendly)
-// ============================================================================
-
-/// Softplus activation: log(1 + exp(x))
-#[inline(always)]
-fn softplus(x: f32) -> f32 {
-    if x > 20.0 { x }
-    else if x < -20.0 { 0.0 }
-    else { (1.0 + x.exp()).ln() }
-}
-
-/// SiLU (Swish) activation: x * sigmoid(x)
-#[inline(always)]
-fn silu(x: f32) -> f32 {
-    x / (1.0 + (-x).exp())
-}
-
-/// Sigmoid activation: 1 / (1 + exp(-x))
-#[inline(always)]
-fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
-}
-
-/// Apply softplus to entire vector (SIMD-friendly flat loop)
-#[inline]
-fn softplus_vec(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|&v| softplus(v)).collect()
-}
-
-/// Element-wise vector addition: a + b
-#[inline]
-fn vec_add(a: &[f32], b: &[f32]) -> Vec<f32> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-
-/// Element-wise vector subtraction: a - b
-#[inline]
-fn vec_sub(a: &[f32], b: &[f32]) -> Vec<f32> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-
-/// Element-wise vector multiplication: a * b
-#[inline]
-fn vec_mul(a: &[f32], b: &[f32]) -> Vec<f32> {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).collect()
-}
-
-/// Scalar-vector multiplication: s * v
-#[inline]
-fn vec_scale(v: &[f32], s: f32) -> Vec<f32> {
-    v.iter().map(|x| x * s).collect()
-}
-
-/// Vector dot product (SIMD auto-vectorized)
-#[inline]
-fn vec_dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-// ============================================================================
-// Mamba-Style Selective Scan (Flat Memory, SIMD-Friendly)
-// ============================================================================
-
-/// OPTIMIZED V3: Perform one step of the Mamba selective scan.
-/// Uses pre-allocated output_buf to avoid per-call Vec allocations.
-///
-///   h(t) = exp(Δ * A) * h(t-1) + Δ * B * x(t)
-///   y(t) = C * h(t) + D * x(t)
-pub fn selective_scan_step(ssm: &mut StateSpace, x: &[f32], _use_input_dependent_bc: bool) -> Vec<f32> {
-    let d_inner = ssm.d_inner;
-    let d_state = ssm.d_state;
-    let ds = d_state;
-    
-    // 1. Compute Δ (step size) from input
-    // Δ = softplus(delta * x + delta_bias)
-    // OPTIMIZED: Write directly into output_buf to avoid temp allocation
-    for i in 0..d_inner {
-        ssm.output_buf[i] = softplus(ssm.delta[i] * x[i] + ssm.delta_bias[i]);
-    }
-    
-    // 2. Discretize A: exp(Δ * A) and compute Δ*B*x in one pass
-    // Flat arrays: a[i*ds + j], h[i*ds + j], b[i*ds + j]
-    // This is the HOT LOOP - optimized for SIMD auto-vectorization
-    for i in 0..d_inner {
-        let di = ssm.output_buf[i]; // delta[i]
-        let xi = x[i];
-        let base = i * ds;
-        
-        // Process d_state elements sequentially (small, typically 16)
-        // Rustc auto-vectorizes this inner loop with SIMD
-        for j in 0..ds {
-            let idx = base + j;
-            // exp(Δ * A) * h(t-1)
-            let delta_a = (di * ssm.a[idx]).exp();
-            // Δ * B * x(t)
-            let delta_b_x = di * ssm.b[idx] * xi;
-            // h(t) = exp(Δ*A) * h(t-1) + Δ*B*x(t)
-            ssm.h[idx] = delta_a * ssm.h[idx] + delta_b_x;
+    /// Get number of parameters
+    pub fn num_params(&self) -> usize {
+        let mut n = self.a_log.len() + self.b.len() + self.c.len()
+            + self.delta.len() + self.delta_bias.len() + self.d.len()
+            + self.ssm_norm_weight.len() + self.ssm_norm_bias.len();
+        if let Some(ref glu) = self.glu {
+            n += glu.num_params();
         }
-    }
-    
-    // 3. Compute output: y = C * h + D * x
-    // y[i] = sum_j(C[i][j] * h[i][j]) + D[i] * x[i]
-    // OPTIMIZED: Write directly into output_buf (reuse the delta buffer)
-    for i in 0..d_inner {
-        let base = i * ds;
-        let mut c_h_sum = 0.0;
-        // This inner loop auto-vectorizes
-        for j in 0..ds {
-            c_h_sum += ssm.c[base + j] * ssm.h[base + j];
-        }
-        ssm.output_buf[i] = c_h_sum + ssm.d[i] * x[i];
-    }
-    
-    // Return a slice of output_buf (caller can use it before next call)
-    ssm.output_buf.clone()
-}
-
-/// Raw selective scan step operating on flat slices (no StateSpace struct needed).
-/// Used by the CUDA module's CPU fallback path.
-/// 
-///   h(t) = exp(Δ * A) * h(t-1) + Δ * B * x(t)
-///   y(t) = C * h(t) + D * x(t)
-pub fn selective_scan_step_raw(
-    a: &[f32],
-    b: &[f32],
-    c: &[f32],
-    h: &mut [f32],
-    x: &[f32],
-    delta: &[f32],
-    delta_bias: &[f32],
-    d: &[f32],
-    output: &mut [f32],
-    d_inner: usize,
-    d_state: usize,
-) {
-    let ds = d_state;
-    
-    // 1. Compute Δ = softplus(delta * x + delta_bias)
-    // Write Δ into output buffer temporarily
-    for i in 0..d_inner {
-        output[i] = softplus(delta[i] * x[i] + delta_bias[i]);
-    }
-    
-    // 2. Discretize and update hidden state
-    for i in 0..d_inner {
-        let di = output[i]; // delta[i]
-        let xi = x[i];
-        let base = i * ds;
-        
-        for j in 0..ds {
-            let idx = base + j;
-            let delta_a = (di * a[idx]).exp();
-            let delta_b_x = di * b[idx] * xi;
-            h[idx] = delta_a * h[idx] + delta_b_x;
-        }
-    }
-    
-    // 3. Compute output: y = C * h + D * x
-    for i in 0..d_inner {
-        let base = i * ds;
-        let mut c_h_sum = 0.0;
-        for j in 0..ds {
-            c_h_sum += c[base + j] * h[base + j];
-        }
-        output[i] = c_h_sum + d[i] * x[i];
-    }
-}
-
-/// Full selective scan over a sequence of inputs.
-pub fn selective_scan_sequence(ssm: &mut StateSpace, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
-    inputs.iter().map(|x| selective_scan_step(ssm, x, true)).collect()
-}
-
-/// Apply SSM transform to a batch of pulses content vectors.
-/// This is the CPU fallback implementation used by the CUDA module.
-pub fn ssm_transform_batch_raw(
-    ssm: &mut StateSpace,
-    pulses_content: &mut [Vec<f32>],
-    use_time_mixing: bool,
-) {
-    for content in pulses_content.iter_mut() {
-        ssm_transform_pulse(ssm, content, use_time_mixing);
+        n
     }
 }
 
 // ============================================================================
-// RWKV-Style Time Mixing
+// Simplified SSM Transform (Backward Compatible API)
 // ============================================================================
 
-/// RWKV-style time mixing.
-pub fn time_mixing(ssm: &mut StateSpace, x: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let shifted = &ssm.prev_x;
-    let sx = vec_sub(shifted, x);
-    
-    let xk = vec_add(x, &vec_mul(&sx, &ssm.time_mix_key));
-    let xv = vec_add(x, &vec_mul(&sx, &ssm.time_mix_value));
-    let xr = vec_add(x, &vec_mul(&sx, &ssm.time_mix_receptance));
-    
-    // Store current input as previous for next step
-    ssm.prev_x.copy_from_slice(x);
-    
-    (xk, xv, xr)
-}
-
-/// RWKV-style channel mixing (feed-forward).
-pub fn channel_mixing(
-    ssm: &mut StateSpace,
-    x: &[f32],
-    key_weight: &[Vec<f32>],
-    value_weight: &[Vec<f32>],
-    receptance_weight: &[Vec<f32>],
-) -> Vec<f32> {
-    let shifted = &ssm.prev_x;
-    let sx = vec_sub(shifted, x);
-    
-    let xk = vec_add(x, &vec_mul(&sx, &ssm.time_mix_key));
-    let xr = vec_add(x, &vec_mul(&sx, &ssm.time_mix_receptance));
-    
-    // Squared ReLU activation for key
-    let k = mat_vec_mul_nested(key_weight, &xk);
-    let k_sq: Vec<f32> = k.iter().map(|&v| v.max(0.0).powi(2)).collect();
-    
-    // Sigmoid receptance
-    let r_raw = mat_vec_mul_nested(receptance_weight, &xr);
-    let r: Vec<f32> = r_raw.iter().map(|&v| sigmoid(v)).collect();
-    
-    // Value projection
-    let v = mat_vec_mul_nested(value_weight, &k_sq);
-    
-    // Element-wise multiply: r * v
-    vec_mul(&r, &v)
-}
-
-/// Matrix-vector multiplication using nested Vec<Vec<f32>> (legacy)
-fn mat_vec_mul_nested(m: &[Vec<f32>], v: &[f32]) -> Vec<f32> {
-    m.iter().map(|row| vec_dot(row, v)).collect()
-}
-
-// ============================================================================
-// RWKV-Style Linear Attention (WKV)
-// ============================================================================
-
-/// RWKV-style WKV computation (linear attention).
-pub fn wkv_attention(
-    state: &mut Vec<Vec<f32>>,
-    r: &[f32],
-    k: &[f32],
-    v: &[f32],
-    w: f32,
-) -> Vec<f32> {
-    let d = r.len();
-    
-    // at = outer(k, v) — (d_inner, d_inner)
-    let at = outer_product(k, v);
-    
-    // state = at + w * state
-    for i in 0..d {
-        for j in 0..d {
-            state[i][j] = at[i][j] + w * state[i][j];
-        }
-    }
-    
-    // output = r * (state aggregated)
-    let mut state_agg = vec![0.0; d];
-    for i in 0..d {
-        for j in 0..d {
-            state_agg[i] += state[i][j];
-        }
-    }
-    
-    vec_mul(r, &state_agg)
-}
-
-/// Outer product: v1 ⊗ v2 → matrix of shape (len(v1), len(v2))
-fn outer_product(v1: &[f32], v2: &[f32]) -> Vec<Vec<f32>> {
-    v1.iter().map(|&a| {
-        v2.iter().map(|&b| a * b).collect()
-    }).collect()
-}
-
-// ============================================================================
-// Nova SSM Integration Helpers
-// ============================================================================
-
-/// Apply SSM transform to a pulse's content vector.
+/// Apply SSM transform to a pulse's content vector (backward compatible).
 pub fn ssm_transform_pulse(
     ssm: &mut StateSpace,
     pulse_content: &mut [f32],
-    use_time_mixing: bool,
+    _use_time_mixing: bool,
 ) -> Vec<f32> {
     let d = pulse_content.len();
     let d_inner = ssm.d_inner;
-    
-    let x: Vec<f32> = if d == d_inner {
+
+    let mut x: Vec<f32> = if d == d_inner {
         pulse_content.to_vec()
     } else if d < d_inner {
         let mut padded = vec![0.0; d_inner];
@@ -498,32 +438,90 @@ pub fn ssm_transform_pulse(
     } else {
         pulse_content[..d_inner].to_vec()
     };
-    
-    let ssm_input = if use_time_mixing {
-        let (xk, _xv, _xr) = time_mixing(ssm, &x);
-        xk
-    } else {
-        x
-    };
-    
-    let output = selective_scan_step(ssm, &ssm_input, true);
-    
-    let out_len = output.len().min(d);
+
+    // Use forward pass which includes GLU
+    let mut buffer = vec![0.0; d_inner * 4]; // Enough for GLU hidden
+    ssm.forward(&mut x, &mut buffer);
+
+    let out_len = x.len().min(d);
     for i in 0..out_len {
-        pulse_content[i] = output[i];
+        pulse_content[i] = x[i];
     }
-    
-    output
+
+    x
 }
 
 /// Apply SSM transform to multiple pulses (batch).
 pub fn ssm_transform_pulses(
     ssm: &mut StateSpace,
     pulses_content: &mut [Vec<f32>],
-    use_time_mixing: bool,
+    _use_time_mixing: bool,
 ) {
+    let mut buffer = vec![0.0; ssm.d_inner * 4];
     for content in pulses_content.iter_mut() {
-        ssm_transform_pulse(ssm, content, use_time_mixing);
+        let d = content.len();
+        let mut x = if d == ssm.d_inner {
+            content.clone()
+        } else {
+            let mut padded = vec![0.0; ssm.d_inner];
+            padded[..d.min(ssm.d_inner)].copy_from_slice(&content[..d.min(ssm.d_inner)]);
+            padded
+        };
+        ssm.forward(&mut x, &mut buffer);
+        let out_len = x.len().min(d);
+        for i in 0..out_len {
+            content[i] = x[i];
+        }
+    }
+}
+
+// ============================================================================
+// Multi-Layer SSM Stack
+// ============================================================================
+
+/// A stack of SSM layers with GLU gating.
+/// Each layer: LayerNorm → SSM → GLU → Residual
+#[derive(Debug, Clone)]
+pub struct SsmStack {
+    pub layers: Vec<StateSpace>,
+    pub dim: usize,
+    pub num_layers: usize,
+    pub glu_hidden_mult: usize,
+}
+
+impl SsmStack {
+    /// Create a stack of SSM layers
+    pub fn new(dim: usize, num_layers: usize, glu_hidden_mult: usize) -> Self {
+        let mut layers = Vec::with_capacity(num_layers);
+        for _ in 0..num_layers {
+            layers.push(StateSpace::new_with_glu(dim, glu_hidden_mult));
+        }
+        SsmStack {
+            layers,
+            dim,
+            num_layers,
+            glu_hidden_mult,
+        }
+    }
+
+    /// Forward pass through all layers
+    pub fn forward(&mut self, x: &mut [f32]) {
+        let mut buffer = vec![0.0; self.dim * self.glu_hidden_mult];
+        for layer in self.layers.iter_mut() {
+            layer.forward(x, &mut buffer);
+        }
+    }
+
+    /// Reset all layers' hidden states
+    pub fn reset(&mut self) {
+        for layer in self.layers.iter_mut() {
+            layer.reset();
+        }
+    }
+
+    /// Get total number of parameters
+    pub fn num_params(&self) -> usize {
+        self.layers.iter().map(|l| l.num_params()).sum()
     }
 }
 
@@ -534,98 +532,133 @@ pub fn ssm_transform_pulses(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_softplus() {
         assert!((softplus(0.0) - 0.6931).abs() < 0.001);
         assert!((softplus(10.0) - 10.0).abs() < 0.001);
         assert!((softplus(-10.0)).abs() < 0.001);
-        println!("✅ softplus works!");
     }
-    
+
     #[test]
     fn test_silu() {
         assert!((silu(0.0)).abs() < 0.001);
         assert!((silu(1.0) - 0.731).abs() < 0.01);
-        println!("✅ silu works!");
     }
-    
+
+    #[test]
+    fn test_gelu() {
+        assert!((gelu(0.0)).abs() < 0.001);
+        assert!((gelu(1.0) - 0.841).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rms_norm() {
+        let mut x = vec![1.0, 2.0, 3.0, 4.0];
+        let weight = vec![1.0; 4];
+        rms_norm(&mut x, &weight, 1e-5);
+        let sum_sq: f32 = x.iter().map(|&v| v * v).sum();
+        assert!((sum_sq - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_layer_norm() {
+        let mut x = vec![1.0, 2.0, 3.0, 4.0];
+        let weight = vec![1.0; 4];
+        let bias = vec![0.0; 4];
+        layer_norm(&mut x, &weight, &bias, 1e-5);
+        let mean: f32 = x.iter().sum::<f32>() / 4.0;
+        assert!(mean.abs() < 0.001);
+        let var: f32 = x.iter().map(|&v| v * v).sum::<f32>() / 4.0;
+        assert!((var - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_glu_creation() {
+        let glu = GluGate::new(64, 256);
+        assert_eq!(glu.dim, 64);
+        assert_eq!(glu.hidden_dim, 256);
+        assert_eq!(glu.gate_weight.len(), 256 * 64);
+        assert_eq!(glu.gate_bias.len(), 256);
+    }
+
+    #[test]
+    fn test_glu_forward() {
+        let glu = GluGate::new(64, 256);
+        let mut x = vec![0.5; 64];
+        let mut buffer = vec![0.0; 256];
+        glu.forward(&mut x, &mut buffer);
+        assert_eq!(x.len(), 64);
+        // Should produce non-zero output
+        let sum: f32 = x.iter().sum();
+        assert!(sum.abs() > 0.0);
+    }
+
     #[test]
     fn test_state_space_creation() {
-        let ssm = StateSpace::new(64, 16);
+        let ssm = StateSpace::new(64);
         assert_eq!(ssm.d_inner, 64);
         assert_eq!(ssm.d_state, 16);
         assert_eq!(ssm.h.len(), 64 * 16);
-        assert_eq!(ssm.a.len(), 64 * 16);
-        // A should be negative
-        for &val in &ssm.a {
-            assert!(val < 0.0);
-        }
-        println!("✅ StateSpace creation works! (flat memory)");
     }
-    
+
+    #[test]
+    fn test_state_space_with_glu() {
+        let mut ssm = StateSpace::new_with_glu(64, 4);
+        assert!(ssm.glu.is_some());
+        let mut x = vec![0.5; 64];
+        let mut buffer = vec![0.0; 256];
+        ssm.forward(&mut x, &mut buffer);
+        assert_eq!(x.len(), 64);
+        let sum: f32 = x.iter().sum();
+        assert!(sum.abs() > 0.0);
+    }
+
     #[test]
     fn test_selective_scan_step() {
-        let mut ssm = StateSpace::new(64, 16);
+        let mut ssm = StateSpace::new(64);
         let x = vec![0.5; 64];
-        let y = selective_scan_step(&mut ssm, &x, true);
-        assert_eq!(y.len(), 64);
+        let y = ssm.selective_scan_step(&x, true);
         let sum: f32 = y.iter().sum();
         assert!(sum.abs() > 0.0);
-        println!("✅ selective_scan_step works! Output sum: {:.4}", sum);
     }
-    
+
     #[test]
-    fn test_selective_scan_sequence() {
-        let mut ssm = StateSpace::new(64, 16);
-        let inputs: Vec<Vec<f32>> = (0..5).map(|i| vec![0.1 * (i as f32 + 1.0); 64]).collect();
-        let outputs = selective_scan_sequence(&mut ssm, &inputs);
-        assert_eq!(outputs.len(), 5);
-        assert_eq!(outputs[0].len(), 64);
-        let sum0: f32 = outputs[0].iter().sum();
-        let sum4: f32 = outputs[4].iter().sum();
-        assert!((sum0 - sum4).abs() > 0.001);
-        println!("✅ selective_scan_sequence works!");
+    fn test_ssm_stack() {
+        let mut stack = SsmStack::new(64, 4, 4);
+        assert_eq!(stack.num_layers, 4);
+        let mut x = vec![0.5; 64];
+        stack.forward(&mut x);
+        assert_eq!(x.len(), 64);
+        let sum: f32 = x.iter().sum();
+        assert!(sum.abs() > 0.0);
     }
-    
-    #[test]
-    fn test_time_mixing() {
-        let mut ssm = StateSpace::new(64, 16);
-        let x1 = vec![0.5; 64];
-        let x2 = vec![0.8; 64];
-        
-        let (xk1, _, _) = time_mixing(&mut ssm, &x1);
-        let (xk2, _, _) = time_mixing(&mut ssm, &x2);
-        
-        assert_eq!(xk1.len(), 64);
-        assert_eq!(xk2.len(), 64);
-        assert_ne!(xk1, xk2);
-        println!("✅ time_mixing works!");
-    }
-    
+
     #[test]
     fn test_ssm_transform_pulse() {
-        let mut ssm = StateSpace::new(64, 16);
+        let mut ssm = StateSpace::new_with_glu(64, 4);
         let mut content = vec![0.3; 64];
         let original = content.clone();
-        
         let output = ssm_transform_pulse(&mut ssm, &mut content, false);
-        
         assert_ne!(content, original);
         assert_eq!(output.len(), 64);
-        println!("✅ ssm_transform_pulse works!");
     }
-    
+
     #[test]
-    fn test_ssm_with_time_mixing() {
-        let mut ssm = StateSpace::new(64, 16);
-        let mut content1 = vec![0.3; 64];
-        let mut content2 = vec![0.7; 64];
-        
-        let out1 = ssm_transform_pulse(&mut ssm, &mut content1, true);
-        let out2 = ssm_transform_pulse(&mut ssm, &mut content2, true);
-        
-        assert_ne!(out1, out2);
-        println!("✅ SSM with time mixing works!");
+    fn test_ssm_transform_sequence() {
+        let mut ssm = StateSpace::new_with_glu(64, 4);
+        let mut contents = vec![
+            vec![0.3; 64],
+            vec![0.5; 64],
+            vec![0.7; 64],
+        ];
+        let original = contents.clone();
+        ssm_transform_pulses(&mut ssm, &mut contents, false);
+        // Each output should differ from input
+        for i in 0..contents.len() {
+            assert_ne!(contents[i], original[i]);
+        }
+        // Sequential outputs should differ due to evolving hidden state
+        assert_ne!(contents[0], contents[2]);
     }
 }

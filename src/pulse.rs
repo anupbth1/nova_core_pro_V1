@@ -1,143 +1,251 @@
-//! Nova Pulse - Continuous meaning unit (replaces discrete tokens)
-//! 
-//! Unlike traditional LLM tokens, NovaPulse is a continuous vector
-//! that can split/merge dynamically based on context.
+//! Nova Pulse - Continuous meaning units with KV-cache for generation
 //!
-//! PRIORITY 1: Added semantic_content for refined semantic representation
-//! and converged flag for tracking pulse stabilization.
+//! Pulses replace discrete tokens with continuous vector representations.
+//! Each pulse carries content, semantic meaning, weight, and entropy.
+//! The KV-cache stores SSM hidden states for O(1) per-step generation.
 
+use crate::embedding::EMBED_DIM;
 use rand::Rng;
-use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single pulse - the fundamental unit of meaning in Nova.
+/// Replaces discrete tokens with continuous vector representations.
+#[derive(Debug, Clone)]
 pub struct NovaPulse {
-    /// Continuous vector representation (no fixed vocabulary)
+    /// Main content vector (the pulse's meaning)
     pub content: Vec<f32>,
-    
-    /// PRIORITY 1: Refined semantic representation after reasoning transforms.
-    /// Stores the semantically meaningful direction of this pulse,
-    /// separate from the raw content which may contain noise.
+    /// Semantic content vector (refined meaning)
     pub semantic_content: Vec<f32>,
-    
-    /// Importance weight (0.0 to 1.0)
+    /// Importance weight (0.0 = irrelevant, 1.0 = crucial)
     pub weight: f32,
-    
-    /// Uncertainty/entropy (0.0 = certain, 1.0 = uncertain)
+    /// Entropy/uncertainty (0.0 = certain, 1.0 = chaotic)
     pub entropy: f32,
-    
-    /// Original position in sequence
+    /// Position in sequence
     pub position: usize,
-    
-    /// Optional: pointer to parent pulse (for hierarchy)
+    /// Parent pulse index (for hierarchical structure)
     pub parent: Option<usize>,
-    
-    /// PRIORITY 1: Whether this pulse has converged to a stable state.
-    /// Set to true when content changes between iterations fall below threshold.
+    /// Whether this pulse has converged (stable state)
     pub converged: bool,
 }
 
-
 impl NovaPulse {
-    /// Create a new random pulse (for initialization)
-    pub fn new(dim: usize, position: usize) -> Self {
-        let mut rng = rand::thread_rng();
-        let content: Vec<f32> = (0..dim).map(|_| rng.gen_range(-0.5..0.5)).collect();
-        Self {
+    /// Create a new pulse from a content vector
+    pub fn new(content: Vec<f32>, position: usize) -> Self {
+        let dim = content.len();
+        NovaPulse {
             semantic_content: content.clone(),
             content,
-            weight: rng.gen_range(0.3..1.0),
-            entropy: rng.gen_range(0.1..0.8),
-            position,
-            parent: None,
-            converged: false,
-        }
-    }
-    
-    /// Create a pulse from text word (continuous encoding, no token lookup)
-    pub fn from_text(word: &str, dim: usize, position: usize) -> Self {
-        let mut content = vec![0.0; dim];
-        let bytes = word.as_bytes();
-        
-        // Bijective mapping: different words -> different vectors
-        for (i, &b) in bytes.iter().enumerate() {
-            if i < dim {
-                // Normalize to [-1, 1] range
-                content[i] = (b as f32) / 255.0 * 2.0 - 1.0;
-            }
-        }
-        
-        // Add word length as signal
-        if dim > 0 {
-            content[0] += (word.len() as f32 / 20.0).min(0.5);
-        }
-        
-        Self {
-            semantic_content: content.clone(),
-            content,
-            weight: (word.len() as f32 / 15.0).min(1.0),
-            entropy: if word.len() < 4 { 0.6 } else { 0.3 },
+            weight: 1.0,
+            entropy: 0.5,
             position,
             parent: None,
             converged: false,
         }
     }
 
-    
-    /// Apply transformation to pulse content
-    pub fn transform(&mut self, f: impl Fn(f32) -> f32) {
-        for x in &mut self.content {
-            *x = f(*x);
-        }
+    /// Create a pulse from token embedding
+    pub fn from_embedding(embedding: &[f32], position: usize) -> Self {
+        Self::new(embedding.to_vec(), position)
     }
-    
-    /// Reduce entropy (becomes more certain)
+
+    /// Create a zero-initialized pulse
+    pub fn zeros(dim: usize, position: usize) -> Self {
+        Self::new(vec![0.0; dim], position)
+    }
+
+    /// Cosine similarity between two pulses
+    pub fn similarity(&self, other: &NovaPulse) -> f32 {
+        let n = self.content.len().min(other.content.len());
+        let mut dot = 0.0f32;
+        let mut norm_a = 0.0f32;
+        let mut norm_b = 0.0f32;
+        for i in 0..n {
+            dot += self.content[i] * other.content[i];
+            norm_a += self.content[i] * self.content[i];
+            norm_b += other.content[i] * other.content[i];
+        }
+        let denom = (norm_a.sqrt() * norm_b.sqrt()).max(1e-8);
+        (dot / denom).clamp(-1.0, 1.0)
+    }
+
+    /// Reduce entropy (make pulse more certain)
     pub fn reduce_entropy(&mut self, factor: f32) {
         self.entropy *= factor;
-        self.entropy = self.entropy.clamp(0.01, 0.99);
+        self.entropy = self.entropy.clamp(0.0, 1.0);
     }
-    
-    /// Get the dominant direction (for visualization)
-    pub fn dominant(&self) -> f32 {
-        if self.content.is_empty() {
-            return 0.0;
-        }
-        self.content.iter().sum::<f32>() / self.content.len() as f32
+
+    /// Increase entropy (make pulse more uncertain)
+    pub fn increase_entropy(&mut self, factor: f32) {
+        self.entropy = self.entropy * (1.0 + factor);
+        self.entropy = self.entropy.clamp(0.0, 1.0);
     }
-    
-    /// Check if two pulses are similar
-    pub fn similarity(&self, other: &Self) -> f32 {
-        let dot: f32 = self.content.iter().zip(&other.content)
-            .map(|(a, b)| a * b)
-            .sum();
-        let norm1: f32 = self.content.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm2: f32 = other.content.iter().map(|x| x * x).sum::<f32>().sqrt();
-        
-        if norm1 < 1e-6 || norm2 < 1e-6 {
-            return 0.0;
-        }
-        dot / (norm1 * norm2)
+
+    /// Get the dimension of this pulse's content
+    pub fn dim(&self) -> usize {
+        self.content.len()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_pulse_creation() {
-        let pulse = NovaPulse::from_text("hello", 32, 0);
-        assert_eq!(pulse.content.len(), 32);
-        assert!(pulse.weight > 0.0);
-        assert!(pulse.entropy > 0.0);
-        println!("✅ Pulse creation works!");
+// ============================================================================
+// KV-Cache for Autoregressive Generation
+// ============================================================================
+
+/// KV-cache stores per-layer SSM hidden states for O(1) per-step generation.
+/// Instead of reprocessing the entire sequence at each step,
+/// we cache the SSM's hidden state (h) and continue from there.
+pub struct KvCache {
+    /// Cached SSM hidden states per core per layer
+    /// Shape: [num_cores][num_layers][d_inner * d_state]
+    pub ssm_states: Vec<Vec<Vec<f32>>>,
+    /// Number of cores
+    pub num_cores: usize,
+    /// Number of SSM layers per core
+    pub num_layers: usize,
+    /// SSM inner dimension
+    pub d_inner: usize,
+    /// SSM state dimension
+    pub d_state: usize,
+    /// Current sequence length (number of tokens generated so far)
+    pub seq_len: usize,
+}
+
+impl KvCache {
+    /// Create a new KV-cache
+    pub fn new(num_cores: usize, num_layers: usize, d_inner: usize, d_state: usize) -> Self {
+        let ssm_states = vec![
+            vec![
+                vec![0.0; d_inner * d_state];
+                num_layers
+            ];
+            num_cores
+        ];
+
+        KvCache {
+            ssm_states,
+            num_cores,
+            num_layers,
+            d_inner,
+            d_state,
+            seq_len: 0,
+        }
     }
-    
-    #[test]
-    fn test_pulse_similarity() {
-        let pulse1 = NovaPulse::from_text("cat", 32, 0);
-        let pulse2 = NovaPulse::from_text("cat", 32, 1);
-        let similarity = pulse1.similarity(&pulse2);
-        assert!(similarity > 0.9);  // Same word should be very similar
-        println!("✅ Similarity: {:.3}", similarity);
+
+    /// Store SSM hidden states for a core's layer
+    pub fn store_layer_state(&mut self, core_idx: usize, layer_idx: usize, state: &[f32]) {
+        if core_idx < self.num_cores && layer_idx < self.num_layers {
+            let n = self.ssm_states[core_idx][layer_idx].len().min(state.len());
+            self.ssm_states[core_idx][layer_idx][..n].copy_from_slice(&state[..n]);
+        }
+    }
+
+    /// Load SSM hidden states for a core's layer
+    pub fn load_layer_state(&self, core_idx: usize, layer_idx: usize) -> &[f32] {
+        if core_idx < self.num_cores && layer_idx < self.num_layers {
+            &self.ssm_states[core_idx][layer_idx]
+        } else {
+            &[] // Empty slice if out of bounds
+        }
+    }
+
+    /// Load SSM hidden states mutably for a core's layer
+    pub fn load_layer_state_mut(&mut self, core_idx: usize, layer_idx: usize) -> &mut [f32] {
+        if core_idx < self.num_cores && layer_idx < self.num_layers {
+            &mut self.ssm_states[core_idx][layer_idx]
+        } else {
+            &mut [] // Empty slice if out of bounds
+        }
+    }
+
+    /// Increment sequence length
+    pub fn advance(&mut self) {
+        self.seq_len += 1;
+    }
+
+    /// Clear the cache for a new sequence
+    pub fn reset(&mut self) {
+        for core_states in self.ssm_states.iter_mut() {
+            for layer_state in core_states.iter_mut() {
+                layer_state.fill(0.0);
+            }
+        }
+        self.seq_len = 0;
+    }
+}
+
+/// Generate text using the KV-cache (autoregressive)
+pub struct TextGenerator {
+    /// Temperature for sampling
+    pub temperature: f32,
+    /// Top-k sampling: only sample from top k tokens
+    pub top_k: usize,
+    /// Top-p (nucleus) sampling: only sample from tokens with cumulative probability p
+    pub top_p: f32,
+    /// Repetition penalty
+    pub repetition_penalty: f32,
+    /// Maximum tokens to generate
+    pub max_tokens: usize,
+}
+
+impl TextGenerator {
+    pub fn new() -> Self {
+        TextGenerator {
+            temperature: 0.8,
+            top_k: 40,
+            top_p: 0.9,
+            repetition_penalty: 1.1,
+            max_tokens: 512,
+        }
+    }
+
+    /// Sample next token from logits
+    pub fn sample(&self, logits: &[f32]) -> usize {
+        if logits.is_empty() {
+            return 3; // <UNK>
+        }
+
+        // Apply temperature
+        let scaled: Vec<f32> = if self.temperature > 0.0 {
+            logits.iter().map(|&x| x / self.temperature).collect()
+        } else {
+            logits.to_vec()
+        };
+
+        // Apply softmax
+        let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = scaled.iter().map(|&x| (x - max_val).exp()).sum();
+        let probabilities: Vec<f32> = scaled.iter()
+            .map(|&x| (x - max_val).exp() / exp_sum)
+            .collect();
+
+        // Top-k filtering
+        let mut indices: Vec<usize> = (0..probabilities.len()).collect();
+        indices.sort_by(|&a, &b| probabilities[b].partial_cmp(&probabilities[a]).unwrap());
+        let top_k_limit = self.top_k.min(probabilities.len());
+        let top_k_indices = &indices[..top_k_limit];
+
+        // Top-p (nucleus) filtering
+        let mut cumulative = 0.0f32;
+        let mut cutoff = top_k_limit;
+        for &idx in top_k_indices.iter() {
+            cumulative += probabilities[idx];
+            if cumulative >= self.top_p {
+                cutoff = cutoff.min(top_k_indices.iter().position(|&x| x == idx).unwrap_or(cutoff) + 1);
+                break;
+            }
+        }
+
+        // Sample from filtered distribution
+        let filtered_indices = &top_k_indices[..cutoff];
+        let mut rng = rand::thread_rng();
+        let r: f32 = rng.gen();
+        let mut cum = 0.0f32;
+        for &idx in filtered_indices {
+            cum += probabilities[idx];
+            if r <= cum {
+                return idx;
+            }
+        }
+
+        // Fallback: return highest probability
+        indices[0]
     }
 }

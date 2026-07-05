@@ -79,7 +79,7 @@ impl Default for NovaAccelerator {
 impl NovaAccelerator {
     /// Auto-detect GPU.
     pub fn new() -> Self {
-        let mut acc = NovaAccelerator {
+        let acc = NovaAccelerator {
             gpu_available: false,
             backend_name: "CPU (Rayon)".to_string(),
             cumulative_profile: CumulativeProfile::default(),
