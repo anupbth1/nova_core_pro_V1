@@ -13,13 +13,17 @@ mod embedding;
 mod loom;
 mod trainer;
 mod optimizer;
+mod dataset;
+mod model;
 
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::time::Instant;
 use loom::NovaLoom;
 use embedding::{VOCAB_SIZE, EMBED_DIM};
-use trainer::TrainingConfig;
+use trainer::{TrainingConfig, TrainingExample};
+use dataset::{NovaDataset, HFDatasetRef, DatasetFormat};
+use model::NovaModelManager;
 
 #[derive(Parser)]
 #[command(name = "nova")]
@@ -62,6 +66,36 @@ enum Commands {
     },
     /// Show parameter count
     Params,
+    /// Train ONE model on MULTIPLE Hugging Face datasets sequentially
+    MultiHfTrain {
+        /// Hugging Face dataset names (comma-separated, e.g. "imdb,wikitext,tiny_shakespeare")
+        #[arg(short, long)]
+        datasets: String,
+        /// Dataset split for all datasets (train, test, validation)
+        #[arg(short, long, default_value = "train")]
+        split: String,
+        /// Input column name (auto-detected if not specified)
+        #[arg(short = 'i', long, default_value = "")]
+        input_col: String,
+        /// Target column name (auto-detected if not specified)
+        #[arg(short = 't', long, default_value = "")]
+        target_col: String,
+        /// Prompt template: e.g. "User: {user}\nAssistant: {assistant}"
+        #[arg(long, default_value = "")]
+        template: String,
+        /// Max rows per dataset
+        #[arg(short = 'm', long, default_value = "300")]
+        max_rows: usize,
+        /// Model dimension (64/128/256/512)
+        #[arg(long, default_value = "256")]
+        dim: usize,
+        /// Number of cores
+        #[arg(long, default_value = "5")]
+        cores: usize,
+        /// Model name to save after training
+        #[arg(short = 'n', long, default_value = "multi-hf-trained-model")]
+        model_name: String,
+    },
 }
 
 fn main() {
@@ -151,7 +185,6 @@ fn main() {
             println!("🎯 Training Nova Core");
             println!("{}", "═".repeat(60));
 
-            // Try to load dataset from file
             let dataset = match std::fs::read_to_string(data_file) {
                 Ok(content) => {
                     let lines: Vec<String> = content.lines()
@@ -162,7 +195,6 @@ fn main() {
                     lines
                 }
                 Err(e) => {
-                    // Generate synthetic training data
                     println!("📝 Could not read {}: {}", data_file, e);
                     println!("📝 Generating synthetic training data...");
                     let synthetic = vec![
@@ -223,7 +255,6 @@ fn main() {
             let elapsed = start.elapsed();
             println!("\n✅ Training complete! Time: {:?}", elapsed);
 
-            // Test generation
             println!("\n{}", "─".repeat(60));
             println!("📝 Sample generations:");
             for prompt in &["the", "hello", "birds", "music"] {
@@ -257,5 +288,154 @@ fn main() {
             println!("Embedding parameters: {}", VOCAB_SIZE * EMBED_DIM);
             println!("Core parameters: {}", params - VOCAB_SIZE * EMBED_DIM);
         }
+
+        Commands::MultiHfTrain { datasets, split, input_col, target_col, template, max_rows, dim, cores, model_name } => {
+            println!("{}", "═".repeat(60));
+            println!("🚀 MULTI-DATASET TRAINING");
+            println!("{}", "═".repeat(60));
+
+            let dataset_names: Vec<&str> = datasets.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if dataset_names.is_empty() {
+                eprintln!("❌ No datasets specified. Use --datasets with comma-separated names.");
+                return;
+            }
+
+            let dim = *dim;
+            let vocab_size = VOCAB_SIZE;
+            let num_cores = *cores.min(&9);
+
+            println!("📋 Datasets: {}", dataset_names.join(", "));
+            println!("📊 Max rows/dataset: {}", max_rows);
+            println!("🔧 Dim: {}, Cores: {}", dim, num_cores);
+            println!("💾 Model: {}", model_name);
+            println!("{}", "═".repeat(60));
+
+            // Create model with specified dimensions
+            let mut nova = NovaLoom::new(dim, vocab_size);
+            let config = TrainingConfig {
+                batch_size: 2,
+                seq_length: 64,
+                learning_rate: 3e-4,
+                max_epochs: 1,
+                warmup_steps: 50,
+                total_steps: 10000,
+                grad_clip: 1.0,
+                eval_every: 100,
+                save_every: 1000,
+            };
+            nova.init_trainer(config);
+
+            let mut total_examples = 0;
+
+            for (idx, ds_name) in dataset_names.iter().enumerate() {
+                println!("\n{}", "═".repeat(60));
+                println!("📦 Dataset {}/{}: '{}'", idx + 1, dataset_names.len(), ds_name);
+                println!("{}", "═".repeat(60));
+
+                // Download dataset using Python
+                println!("📥 Downloading '{}'...", ds_name);
+                let examples = match download_hf_dataset(ds_name, split, *max_rows) {
+                    Ok(examples) => {
+                        println!("   ✅ Loaded {} examples", examples.len());
+                        examples
+                    }
+                    Err(e) => {
+                        eprintln!("   ⚠️  Failed: {}. Skipping.", e);
+                        continue;
+                    }
+                };
+
+                // Train on this dataset
+                println!("🎯 Training on '{}'...", ds_name);
+                let texts: Vec<String> = examples.iter().map(|ex| {
+                    if ex.target.is_empty() || ex.target == ex.input {
+                        ex.input.clone()
+                    } else {
+                        format!("{} {}", ex.input, ex.target)
+                    }
+                }).collect();
+
+                let loss = nova.train(&texts);
+                println!("   ✅ Loss: {:.6}", loss);
+                total_examples += examples.len();
+            }
+
+            if total_examples == 0 {
+                eprintln!("❌ No training data loaded from any dataset.");
+                return;
+            }
+
+            // Save model
+            println!("\n{}", "═".repeat(60));
+            println!("💾 Saving model '{}' after {} examples...", model_name, total_examples);
+            let model_mgr = NovaModelManager::new();
+            match model_mgr.save_model(&nova, model_name) {
+                Ok(path) => println!("✅ Model saved to: {}", path),
+                Err(e) => eprintln!("❌ Failed to save model: {}", e),
+            }
+
+            println!("\n{}", "═".repeat(60));
+            println!("✅ Multi-dataset training complete!");
+            println!("   📚 Total examples: {}", total_examples);
+            println!("   💾 Model: '{}'", model_name);
+            println!("{}", "═".repeat(60));
+        }
     }
+}
+
+/// Download dataset from Hugging Face using Python
+fn download_hf_dataset(name: &str, split: &str, max_rows: usize) -> Result<Vec<TrainingExample>, String> {
+    use std::process::Command;
+
+    let python_script = format!(r#"
+import json, sys
+try:
+    from datasets import load_dataset
+    ds = load_dataset("{}", split="{}", streaming=True, trust_remote_code=True)
+    examples = []
+    for i, row in enumerate(ds):
+        if i >= {}:
+            break
+        # Use the first text-like column as input
+        text_val = None
+        for k, v in row.items():
+            if isinstance(v, str) and len(v) > 5:
+                text_val = str(v)[:500]
+                break
+        if text_val is None:
+            continue
+        examples.append({{"input": text_val, "target": ""}})
+    if not examples:
+        # Fallback: convert entire row to string
+        for i, row in enumerate(ds):
+            if i >= {}:
+                break
+            text_val = json.dumps(row, ensure_ascii=False)[:500]
+            examples.append({{"input": text_val, "target": ""}})
+    print(json.dumps(examples))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}), file=sys.stderr)
+    sys.exit(1)
+"#, name, split, max_rows, max_rows);
+
+    let output = Command::new("python")
+        .arg("-c")
+        .arg(&python_script)
+        .output()
+        .map_err(|e| format!("Failed to run Python: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python error: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let examples: Vec<TrainingExample> = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse Python output: {}", e))?;
+
+    Ok(examples)
 }

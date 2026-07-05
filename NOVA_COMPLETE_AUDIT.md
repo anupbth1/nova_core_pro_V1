@@ -1,1950 +1,1060 @@
-# NOVA CORE — COMPLETE ENGINEERING & ARCHITECTURE AUDIT
-
-**Audit Date:** July 3, 2026  
-**Auditor:** AI Engineering Analysis (Source Code Inspection)  
-**Version:** Git commit `e9a08511e0e8c34bbb203bf267e11b42d0994654`  
-**Repository:** `github.com/anupbth1/nova_core_pro_V1`
-
----
-
-## TABLE OF CONTENTS
-
-1. [Executive Summary](#1-executive-summary)
-2. [Development Timeline](#2-development-timeline)
-3. [File-by-File Engineering Report](#3-file-by-file-engineering-report)
-4. [CUDA Audit](#4-cuda-audit)
-5. [Training Pipeline](#5-training-pipeline)
-6. [Inference Pipeline](#6-inference-pipeline)
-7. [Module Analysis](#7-module-analysis)
-8. [New Modules Audit](#8-new-modules-audit)
-9. [Learned vs Hardcoded Capability Audit](#9-learned-vs-hardcoded-capability-audit)
-10. [Reasoning Audit](#10-reasoning-audit)
-11. [Knowledge Representation](#11-knowledge-representation)
-12. [Coding Intelligence Audit](#12-coding-intelligence-audit)
-13. [Learning vs Hard-coded Analysis](#13-learning-vs-hard-coded-analysis)
-14. [Comparison with Modern LLMs](#14-comparison-with-modern-llms)
-15. [Critical Architectural Weaknesses](#15-critical-architectural-weaknesses)
-16. [Final Readiness Score](#16-final-readiness-score)
-17. [Mathematics Audit](#17-mathematics-audit)
-18. [Tool Use Audit](#18-tool-use-audit)
-19. [Current Problems](#19-current-problems)
-20. [Statistics](#20-statistics)
-21. [Git Summary](#21-git-summary)
-22. [Future Roadmap](#22-future-roadmap)
-23. [Final Verdict](#23-final-verdict)
+# NOVA CORE — Complete Architecture Audit Report
+**Date:** July 5, 2026  
+**Auditor:** Senior AI Research Engineer  
+**Scope:** Full reverse engineering of Nova Core v0.1.0  
+**Status:** No code modified. No files rewritten. Pure analysis.
 
 ---
 
-## 1. EXECUTIVE SUMMARY
+## PHASE 1 — PROJECT OVERVIEW
 
-### 1.1 What Nova Core Is
+### 1.1 Overall Architecture
 
-Nova Core is a **post-transformer neural architecture** implemented in Rust (~9,500 lines of source code across 17 modules). It replaces the transformer's quadratic self-attention with **O(n) field dynamics** — a physics-inspired computational model where information propagates through a shared field structure rather than pairwise attention. The architecture combines:
+Nova is a Rust-based "post-transformer" language model that explicitly rejects the three pillars of modern LLMs:
 
-- **State Space Models (SSM)**: Mamba-style selective scan for sequence processing
-- **Field Dynamics**: Weighted averaging + momentum + diffusion across pulses
-- **Pulse-Based Computation**: Individual information packets with content vectors, weights, and entropy
-- **Multi-Core Processing**: Parallel transform pipelines with cross-core communication
-- **CUDA Acceleration**: GPU kernels via PTX compilation (optional feature)
+| Rejected Concept | Nova Replacement |
+|---|---|
+| **Tokens** (discrete vocabulary IDs) | **Pulses** (continuous vectors) |
+| **Attention** (O(n²) pairwise) | **Field** (O(n) diffusion dynamics) |
+| **Layers** (fixed depth stack) | **Cores** (adaptive depth, parallel graph) |
 
-### 1.2 What Nova Core Is NOT
-
-Despite claiming "training" capabilities, Nova Core **does not perform gradient-based learning** in any meaningful sense. The training pipeline is fundamentally **hash-based memorization** — storing input→output mappings in a `HashMap<u64, String>`. The SSM parameters (A, B, C, delta, delta_bias, D) are **never updated during training**. The vocabulary embeddings are **deterministic byte-to-float mappings** with no learned semantic structure.
-
-### 1.3 Critical Verdict
-
-| Aspect | Rating | Explanation |
-|--------|--------|-------------|
-| Architecture Novelty | ★★★★☆ | Field dynamics + SSM + pulse computation is genuinely novel |
-| Training Correctness | ★☆☆☆☆ | Hash-based memorization, not gradient-based learning |
-| Inference Quality | ★★☆☆☆ | Deterministic hash lookup + n-gram fallback + random word generation |
-| GPU Utilization | ★★★☆☆ | CUDA kernels exist but are optional and underutilized |
-| Code Quality | ★★★☆☆ | Well-structured Rust but with significant architectural gaps |
-| Production Readiness | ★☆☆☆☆ | Prototype/demo quality — not suitable for real use |
-| Documentation | ★★☆☆☆ | README exists but no API docs, no architecture docs |
-
-### 1.4 Key Numbers
-
-- **17 source modules** in `src/`
-- **~9,500 lines** of Rust source code
-- **8 CUDA kernels** in `kernels/ssm.cu` (358 lines)
-- **0 gradient updates** to SSM parameters during training
-- **150 words** in the hardcoded fallback vocabulary
-- **6** maximum inference iterations (hardcoded)
-- **0.12** convergence threshold (hardcoded)
-- **3** n-gram order (hardcoded)
-- **2048** max sequence length (hardcoded in LongContextManager, unused)
-
----
-
-## 2. DEVELOPMENT TIMELINE
-
-### 2.1 Phase 1: Foundation (Core Architecture)
-
-**Files created:** `src/main.rs`, `src/pulse.rs`, `src/field.rs`, `src/core.rs`, `src/ssm.rs`, `src/loom.rs`
-
-- Implemented the fundamental Nova architecture: pulses, fields, cores, SSM
-- Pulse-based computation with content vectors, weights, entropy
-- Field dynamics with weighted averaging, momentum, diffusion
-- Multi-core processing with parallel transforms
-- SSM selective scan (Mamba-style) with flat memory layout
-- Main orchestration engine (NovaLoom) with process() method
-- CLI entry point with basic commands (Run, Bench, Chat, Info, Speed)
-
-**Architecture decisions made:**
-- O(n) field dynamics instead of O(n²) self-attention
-- Flat Vec<f32> memory layout for SSM (d_inner × d_state)
-- Rayon-based parallel CPU processing
-- Hash-based vocabulary (deterministic random embeddings)
-
-### 2.2 Phase 2: Training & Data (Learning Pipeline)
-
-**Files created:** `src/trainer.rs`, `src/dataset.rs`, `src/model.rs`
-
-- Added training pipeline with hash-based memorization
-- Dataset loading (CSV, JSON, JSONL, Parquet, Text, HuggingFace)
-- Model save/load with serialization
-- Training commands: Train, GenData, HfTrain, MultiHfTrain
-- N-gram language model for fallback generation
-
-**Architecture decisions made:**
-- Hash-based training (NOT gradient-based)
-- N-gram patterns for text generation fallback
-- Model snapshots with full state serialization
-
-### 2.3 Phase 3: GPU Acceleration (Performance)
-
-**Files created:** `src/cuda.rs`, `kernels/ssm.cu`, `build.rs`
-
-- CUDA kernel development (8 kernels)
-- PTX compilation via nvcc in build.rs
-- Hardware backend abstraction (Cuda, Hip, Cpu, None)
-- GPU buffer cache and async streams
-- Automatic backend detection
-
-**Architecture decisions made:**
-- cudarc crate for CUDA bindings (not raw CUDA)
-- Optional feature-gated (--features cuda)
-- Every GPU operation has CPU fallback
-- Shared memory usage in kernels
-
-### 2.4 Phase 4: Multi-Core Communication (Cross-Core Signals)
-
-**Files created:** Modifications to `src/core.rs`, `src/loom.rs`
-
-- CoreMessage struct for inter-core communication
-- broadcast_message(), receive_messages(), blend_cross_core_signals()
-- Cross-core signal blending in process_cores_parallel()
-
-**Architecture decisions made:**
-- Message-based communication (not attention-based)
-- Simple blending (weighted average of received messages)
-
-### 2.5 Phase 5: Knowledge & Context (Augmentation)
-
-**Files created:** `src/knowledge.rs`, `src/context.rs`
-
-- KnowledgeStore with concepts, relations, facts
-- LongContextManager with sliding window SSM, hierarchical fields
-- Knowledge augmentation in core transforms
-
-**Architecture decisions made:**
-- HashMap-based knowledge storage
-- Deterministic byte-based concept embeddings
-- Sliding window for long context (not implemented in inference)
-
-### 2.6 Phase 6: Specialized Engines (Capabilities)
-
-**Files created:** `src/coding.rs`, `src/math.rs`, `src/tools.rs`, `src/optimizer.rs`
-
-- CodingEngine with pattern detection, code generation, debugging
-- MathEngine with expression evaluation, algebra, logic
-- ToolEngine with file ops, HTTP, calculator, data transform
-- NovaOptimizer with AdamW, gradient clipping, LR scheduling
-
-**Architecture decisions made:**
-- Standalone utility modules (NOT integrated into inference)
-- Template-based code generation (not neural)
-- Rule-based debugging (not learned)
-- Optimizer defined but never called from trainer
-
-### 2.7 Phase 7: Benchmarking (Evaluation)
-
-**Files created:** `src/benchmark/mod.rs`, `src/benchmark/tasks.rs`, `src/benchmark/metrics.rs`, `src/benchmark/data.rs`, `src/benchmark/compare.rs`, `src/benchmark/improve.rs`
-
-- Benchmark suite with language, reasoning, code, memory tasks
-- Metrics calculation (accuracy, precision, recall, F1, perplexity)
-- Training data generation for weak tasks
-- Comparison framework (placeholder)
-
-**Architecture decisions made:**
-- String-matching evaluation (not semantic)
-- Placeholder comparisons (always returns 0.5)
-
----
-
-## 3. FILE-BY-FILE ENGINEERING REPORT
-
-### 3.1 `src/main.rs` (1,150 lines) — CLI Entry Point
-
-**Purpose:** Command-line interface using clap argument parsing. Dispatches to all major subsystems.
-
-**Structure:**
-- Module declarations for all 17 modules
-- 14 CLI subcommands: Run, Bench, Chat, Info, Speed, FullBench, Improve, GenData, Train, SmartChat, Dataset, Model, HfTrain, MultiHfTrain
-- Initialization: `init_global_thread_pool()`, `init_global_accelerator()`
-- Creates `NovaLoom::new(dim, cores)` and calls `nova.process()`
-
-**Engineering Assessment:**
-- **Well-structured** CLI with clear command separation
-- **Missing**: No `--help` text for many subcommands
-- **Missing**: No error handling for missing model files
-- **Missing**: No graceful shutdown or signal handling
-- **Assumption**: Assumes `NovaLoom::new()` with default parameters works for all use cases
-- **Assumption**: Assumes GPU is available if `--features cuda` is enabled
-
-**Critical Issues:**
-- `SmartChat` command calls `nova.process()` which is the same as `Chat` — no actual "smart" behavior
-- `Improve` command calls `benchmark.auto_improve()` which is a placeholder
-- `FullBench` runs all benchmarks but comparison results are hardcoded to 0.5
-
-### 3.2 `src/pulse.rs` (124 lines) — NovaPulse Struct
-
-**Purpose:** Defines the fundamental computation unit — a pulse of information.
-
-**Structure:**
-- `NovaPulse` struct: `content` (Vec<f32>), `weight` (f32), `entropy` (f32), `position` (usize), `parent` (Option<usize>)
-- `new()`: Creates pulse with random content (uniform [-1, 1])
-- `from_text()`: Creates pulse from text using byte-to-float encoding
-- `transform()`: Applies a function to content vector
-- `reduce_entropy()`: Decreases entropy by a factor
-- `dominant()`: Returns the index of the maximum absolute value in content
-- `similarity()`: Cosine similarity between two pulses
-
-**Engineering Assessment:**
-- **Clean, minimal design** — single responsibility
-- **Deterministic encoding**: `from_text()` maps each byte to `(b as f32) / 255.0 * 2.0 - 1.0` — this is a bijective mapping but has NO semantic structure
-- **Assumption**: Assumes content vector dimension matches field/core dimension
-- **Assumption**: Assumes random initialization is sufficient for new pulses
-
-**Critical Issues:**
-- `from_text()` produces content vectors where each element is in [-1, 1] — this is a lossless encoding but the model cannot learn from it because the mapping is purely deterministic
-- No mechanism to update pulse content based on learned information
-- `parent` field is set but never used in the inference path
-
-### 3.3 `src/field.rs` (274 lines) — NovaField Struct
-
-**Purpose:** The shared field that mediates information propagation between pulses.
-
-**Structure:**
-- `NovaField` struct: `dim`, `state`, `momentum`, `learning_rate`, `diffusion`, `update_count`, `ssm` (Option<StateSpace>), `use_ssm`, `ssm_gate`
-- `update()`: Three-step process:
-  1. **Weighted field average**: `state = Σ(weight_i * content_i) / Σ(weight_i)` — O(n) parallel via Rayon
-  2. **SSM-enhanced field state update**: `state = momentum * state + (1-momentum) * avg` then SSM transform
-  3. **Diffuse field info to pulses**: Each pulse gets `content_i = content_i + diffusion * (state - content_i)`
-- `enable_ssm()`, `disable_ssm()`: Toggle SSM processing
-- `state()`, `set_state()`, `momentum()`, `set_momentum()`: State accessors
-- `energy()`: Returns `state.iter().map(|x| x * x).sum::<f32>()`
-- `reset()`: Resets state and momentum to zero
-
-**Engineering Assessment:**
-- **Elegant design** — the field dynamics are genuinely novel
-- **O(n) complexity** — weighted average is O(n) vs transformer's O(n²)
-- **Rayon parallel** — uses `par_iter()` for weighted average computation
-- **Assumption**: Assumes all pulses have the same dimension
-- **Assumption**: Assumes diffusion coefficient is constant across all dimensions
-
-**Critical Issues:**
-- The field update is purely mechanical — there's no learned component in how information propagates
-- SSM gate is a scalar (f32) applied uniformly to all dimensions
-- No mechanism for the field to learn which information to retain vs discard
-- `learning_rate` field exists but is never used in the update logic
-
-### 3.4 `src/core.rs` (357 lines) — NovaCore Struct
-
-**Purpose:** Individual processing core that applies transforms to pulses.
-
-**Structure:**
-- `NovaCore` struct: `id`, `name`, `memory`, `adaptive_depth`, `internal_state`, `gate`, `ssm` (StateSpace), `use_ssm`, `use_time_mixing`, `received_messages`, `cross_core_blend`
-- `process()`: Main transform pipeline:
-  1. Compute `adaptive_depth` from average entropy and weight
-  2. Loop through transforms for `adaptive_depth` iterations
-  3. Each transform modifies pulse content vectors
-- **Transforms:**
-  - `syntax_transform`: `tanh(content[i])` — squashing to [-1, 1]
-  - `semantic_transform`: Amplify/attenuate based on `internal_state[i]`
-  - `memory_transform`: Read from / write to core memory
-  - `reasoning_transform`: Pairwise difference between pulses
-  - `pattern_transform`: Similarity detection between pulses
-  - `default_transform`: `tanh(content[i] * gate)` — gated squashing
-  - `ssm_transform`: Selective scan with blending
-  - `knowledge_transform`: Knowledge augmentation (Phase 5)
-- `broadcast_message()`, `receive_messages()`, `blend_cross_core_signals()`: Multi-core communication
-
-**Engineering Assessment:**
-- **Well-structured** transform pipeline with clear separation
-- **Adaptive depth** based on entropy/weight is a nice dynamic feature
-- **Assumption**: Assumes transforms are applied in fixed order (syntax → semantic → memory → reasoning → pattern → default → SSM → knowledge)
-- **Assumption**: Assumes all transforms are beneficial for all inputs
-
-**Critical Issues:**
-- `reasoning_transform` is O(n²) — computes pairwise differences between all pulses
-- `pattern_transform` is O(n²) — computes pairwise cosine similarities
-- Transform order is hardcoded — no learned routing
-- `internal_state` is updated by transforms but the update rules are hardcoded
-- `gate` is a scalar applied uniformly — no per-dimension gating
-
-### 3.5 `src/ssm.rs` (619 lines) — StateSpace Struct
-
-**Purpose:** Implements Mamba-style selective scan with flat memory layout.
-
-**Structure:**
-- `StateSpace` struct: `d_state`, `d_inner`, `a`, `a_log`, `b`, `c`, `h`, `output_buf`, `delta`, `delta_bias`, `d`, `time_mix_x`, `time_mix_w`, `time_mix_key`, `time_mix_value`, `time_mix_receptance`, `prev_x`
-- `selective_scan_step()`: Core SSM computation:
-  - `h(t) = exp(Δ*A) * h(t-1) + Δ * B * x(t)`
-  - `y(t) = C * h(t) + D * x(t)`
-- `selective_scan_step_raw()`: Raw pointer version for CUDA fallback
-- `selective_scan_sequence()`: Process a sequence of inputs
-- `time_mixing()`: RWKV-style time mixing (blend current and previous input)
-- `channel_mixing()`: RWKV-style channel mixing
-- `wkv_attention()`: Simplified WKV attention
-- `ssm_transform_pulse()`, `ssm_transform_pulses()`: Apply SSM to pulse content
-- Helper functions: `softplus`, `silu`, `sigmoid`, `vec_add`, `vec_sub`, `vec_mul`, `vec_scale`, `vec_dot`
-
-**Engineering Assessment:**
-- **Correct SSM implementation** — follows Mamba's selective scan formulation
-- **Flat memory layout** — stores d_inner × d_state matrices as flat Vec<f32>
-- **RWKV-style mixing** — time_mixing and channel_mixing are correctly implemented
-- **Assumption**: Assumes d_state is small (typically 16-64) for efficient computation
-- **Assumption**: Assumes delta is computed from input (not learned per-parameter)
-
-**Critical Issues:**
-- **SSM parameters are NEVER updated during training** — A, B, C, delta, delta_bias, D remain at their initialized values forever
-- Time mixing parameters (time_mix_x, time_mix_w, etc.) are also never updated
-- `wkv_attention()` is a simplified version — not the full RWKV attention mechanism
-- No gradient computation for SSM parameters
-- `selective_scan_sequence()` processes one step at a time — no parallel scan optimization
-
-### 3.6 `src/loom.rs` (1,082 lines) — NovaLoom Struct
-
-**Purpose:** Main orchestration engine — the "brain" of Nova Core.
-
-**Structure:**
-- `NovaLoom` struct: `name`, `cores`, `field`, `dim`, `max_iterations` (6), `convergence_threshold` (0.12), `total_pulses_processed`, `total_iterations`, `learned_responses` (HashMap<u64, String>), `learned_inputs`, `vocabulary`, `vocab_reverse`, `ngram_patterns`, `ngram_order` (3), `all_words`, `knowledge`
-- `process()`: Main inference path:
-  1. **Exact hash match**: If input hash exists in `learned_responses`, return immediately
-  2. **Conversational override**: Returns None (hardcoded overrides removed)
-  3. **Word-overlap matching**: Find best match by word overlap
-  4. **Neural path**: Always runs cores + field with adaptive convergence
-  5. **Response selection**: Exact match > overlap match > n-gram generation > pulse-to-text
-- `generate_text()`: Generates text using hybrid approach:
-  1. Pulse prediction from field state
-  2. N-gram prediction (highest probability)
-  3. Backoff n-gram (lower order)
-  4. Distribution sampling from field state
-  5. Random diverse word selection
-- `process_cores_parallel()`: GPU path (cuda feature) or CPU Rayon parallel
-- `text_to_pulses()`: Splits text by whitespace, creates NovaPulse for each word
-- `pulses_to_text()`: Maps pulses to words using vocabulary cosine similarity or deterministic word list
-- `map_pulses_to_vocab()`: Cosine similarity with early exit at 0.95
-- `learn_ngrams()`: Builds n-gram patterns from training examples
-- `learn_sliding_window_ngrams()`: Bigram/trigram transitions
-
-**Engineering Assessment:**
-- **Complex orchestration** with multiple fallback strategies
-- **Adaptive convergence** — stops iterating when field energy stabilizes
-- **Hybrid generation** — combines neural, n-gram, and random approaches
-- **Assumption**: Assumes 6 iterations is sufficient for convergence
-- **Assumption**: Assumes 0.12 is the right convergence threshold
-
-**Critical Issues:**
-- **Hash-based memorization** is the primary "learning" mechanism — this is NOT neural learning
-- **Word-overlap matching** is a bag-of-words approach with no semantic understanding
-- **Pulse-to-text mapping** falls back to a hardcoded list of 150 words when cosine similarity fails
-- **N-gram model** is trained on the same data as hash memorization — no generalization
-- **LongContextManager is NOT called** anywhere in the inference path
-- **KnowledgeStore is NOT called** in the main process() method (only in knowledge_transform which is a core transform)
-- **generate_text()** has 5 fallback strategies, suggesting none of them work reliably
-
-### 3.7 `src/trainer.rs` (1,139 lines) — NovaTrainer Struct
-
-**Purpose:** Training pipeline for Nova Core.
-
-**Structure:**
-- `init_vocabulary()`: Creates hash-based deterministic random embeddings
-- `train_batch()`: Forward pass through cores + field, stores hash associations, backward pass updates core memory/state/gate and field state
-- `train_epoch()`: Shuffles, batches, trains, computes accuracy
-- `train()`: Multi-epoch training loop
-- `train_neural()`: Full vector error training with GPU support, SSM parameter updates, n-gram learning, knowledge learning
-- `train_one_pass()`: Ultra-fast hash-based learning with Rayon parallelism
-- `train_one_pass_ultra()`: Same as one_pass
-- `compute_loss()`: MSE against target word embeddings
-- `pulse_to_word()`: Cosine similarity or deterministic word list fallback
-- `pulses_to_readable_text()`: Converts pulse vectors to text
-- `auto_detect_threads()`, `auto_detect_batch_size()`: Auto-configuration
-- `init_global_thread_pool()`: Global Rayon thread pool initialization
-
-**Engineering Assessment:**
-- **Comprehensive training pipeline** with multiple training modes
-- **Auto-detection** of threads and batch size is practical
-- **GPU support** in train_neural() for parallel processing
-- **Assumption**: Assumes hash-based memorization constitutes "learning"
-- **Assumption**: Assumes MSE loss against word embeddings is meaningful
-
-**Critical Issues:**
-- **Hash-based memorization**: `train_batch()` stores `input_hash → target_text` in a HashMap. This is NOT gradient-based learning.
-- **"Backward pass"** in `train_batch()` updates core memory/state/gate and field state using hardcoded rules (e.g., `lr * 0.5`, `lr * 0.3`), NOT gradient descent
-- **NovaOptimizer (AdamW) is NEVER called** from trainer.rs — the optimizer module exists but is completely disconnected
-- **SSM parameters are NEVER updated** — A, B, C, delta, delta_bias, D remain at initialization
-- **train_one_pass() and train_one_pass_ultra()** are identical — code duplication
-- **train_neural()** claims to update SSM parameters but the update logic is not visible in the code — it calls `ssm_transform_pulses` but doesn't modify SSM weights
-- **Vocabulary embeddings are deterministic** — `init_vocabulary()` uses `hash_word_to_embedding()` which is a pure function of the word string, not learned
-
-### 3.8 `src/cuda.rs` (1,529 lines) — GPU Acceleration Module
-
-**Purpose:** CUDA/GPU acceleration for Nova Core operations.
-
-**Structure:**
-- `HardwareBackend` enum: Cuda, Hip, Cpu, None
-- `NovaAccelerator` struct: backend, device, kernel_mgr, enabled, gpu_ops, cpu_ops, total_gpu_time_ms, total_cpu_time_ms, batch_profile, cumulative_profile, profiling_enabled, buffer_cache, async_streams, current_stream_idx, use_async_streams
-- `CudaKernelManager` struct: ctx, stream, 8 CUDA function handles
-- `BatchProfile` struct: detailed timing/memory/fallback tracking
-- `CumulativeProfile` struct: cross-batch accumulation
-- Key methods: `auto_detect_backend()`, `selective_scan()`, `ssm_transform_batch()`, `field_update()`, `process_cores_batch()`
-- Global singleton: `GLOBAL_ACCELERATOR` (OnceCell<Mutex<NovaAccelerator>>)
-- `init_global_accelerator()`, `get_accelerator()`, `is_gpu_available()`, `get_backend_name()`, `get_accelerator_stats()`
-- GPU buffer cache: `get_or_create_buffer()`, `return_buffer()`, `upload_to_buffer()`, `clear_buffer_cache()`
-- Async streams: `next_async_stream()`, `sync_all_streams()`
-
-**Engineering Assessment:**
-- **Well-structured GPU abstraction** with clean separation of concerns
-- **Comprehensive profiling** with per-operation timing and fallback tracking
-- **Buffer cache** reduces allocation overhead
-- **Async streams** enable concurrent kernel execution
-- **Every GPU operation has CPU fallback** — robust error handling
-- **Assumption**: Assumes CUDA-capable GPU with compute capability 7.5+ (Turing)
-- **Assumption**: Assumes cudarc crate is available (requires --features cuda)
-
-**Critical Issues:**
-- GPU acceleration is **optional** — the system works without it
-- Only 8 kernels are implemented — many operations still run on CPU
-- No HIP support despite the enum variant (no HIP kernels)
-- Buffer cache has no eviction policy — could grow unbounded
-- Async stream count is fixed (4) — no dynamic adjustment
-- Profiling is always enabled — adds overhead even when not needed
-
-### 3.9 `src/knowledge.rs` (448 lines) — KnowledgeStore
-
-**Purpose:** Stores and retrieves structured knowledge (concepts, relations, facts).
-
-**Structure:**
-- `KnowledgeStore` struct: concepts (HashMap<String, Concept>), relations, reverse_relations, facts, facts_by_category, dim, max_concepts, learning_rate
-- `Concept` struct: name, embedding (Vec<f32>), category, frequency
-- `Relation` struct: source, target, relation_type, weight
-- `Fact` struct: subject, predicate, object, category, confidence
-- Methods: `add_concept()`, `add_relation()`, `add_fact()`, `find_closest_concept()`, `get_concepts_by_category()`, `get_relations()`, `get_reverse_relations()`, `get_facts_by_category()`, `augment_pulse_with_knowledge()`, `learn_from_example()`, `knowledge_count()`, `summary()`
-
-**Engineering Assessment:**
-- **Clean knowledge graph design** with concepts, relations, and facts
-- **Category-based organization** enables domain-specific retrieval
-- **Assumption**: Assumes concept embeddings are meaningful (they're deterministic byte mappings)
-- **Assumption**: Assumes `find_closest_concept()` with cosine similarity is sufficient for retrieval
-
-**Critical Issues:**
-- **KnowledgeStore is NOT integrated into the main inference path** — it's only called from `knowledge_transform()` in core.rs, which is one of many transforms
-- **Concept embeddings are deterministic** — `learn_from_example()` creates embeddings using the same byte-to-float mapping as `NovaPulse::from_text()`
-- **No forgetting mechanism** — concepts accumulate without limit (max_concepts is a soft limit)
-- **Relations are stored as strings** — no embedding-based relation reasoning
-- **Facts are stored as strings** — no logical inference over facts
-- **learn_from_example()** extracts concepts from words > 3 characters — this is a heuristic with no linguistic basis
-
-### 3.10 `src/context.rs` (395 lines) — LongContextManager
-
-**Purpose:** Manages long context windows for processing extended sequences.
-
-**Structure:**
-- `LongContextManager` struct: enabled, max_seq_length (2048), window_size (512), window_overlap (64), compression_ratio (4), use_hierarchical_field, context_chunks
-- `ContextChunk` struct: ssm_state, field_state, field_momentum, avg_entropy, token_count, chunk_index
-- `HierarchicalField` struct: local (NovaField), global (NovaField), global_blend (0.1), global_decay (0.95)
-- `SlidingWindowSSM` struct: window_size, overlap, stride
-- `ContextCompressor` struct: ratio, use_ssm_compression
-
-**Engineering Assessment:**
-- **Well-designed** long context architecture with sliding windows and hierarchical fields
-- **Context compression** via SSM state summarization
-- **Assumption**: Assumes 2048 max sequence length (reasonable for SSM)
-- **Assumption**: Assumes 4:1 compression ratio is optimal
-
-**Critical Issues:**
-- **LongContextManager is NEVER called from the inference path** — it's a dead module
-- `process()` method exists but is never invoked from `NovaLoom::process()`
-- No integration with the main text processing pipeline
-- HierarchicalField requires NovaField to implement Clone + Debug (which was added as a fix)
-- No tests or benchmarks for long context performance
-
-### 3.11 `src/coding.rs` (755 lines) — CodingEngine
-
-**Purpose:** Code analysis, generation, and debugging capabilities.
-
-**Structure:**
-- `CodingEngine` struct: known_patterns, bug_patterns, templates, total_analyses, total_generations, total_debugs
-- `CodeSnippet`, `CodePattern` enum (10 variants), `CodeGenRequest`, `DebugResult`, `CodeIssue`, `IssueType` enum (11 variants)
-- `analyze_code()`: Pattern detection via string matching
-- `compute_complexity()`: Heuristic scoring (lines, branches, nesting depth)
-- `generate_code()`: Template-based dispatch to language-specific generators
-- `debug_code()`: Rule-based debugging for Rust, Python, JavaScript
-
-**Engineering Assessment:**
-- **Well-structured** with clear separation of analysis, generation, debugging
-- **Multi-language support** (Rust, Python, JavaScript)
-- **Assumption**: Assumes string matching is sufficient for code analysis
-- **Assumption**: Assumes template-based generation is sufficient for code generation
-
-**Critical Issues:**
-- **CodingEngine is NOT integrated into the inference path** — it's a standalone utility
-- **Code analysis** uses `contains()` and regex matching — no AST parsing, no semantic analysis
-- **Code generation** uses hardcoded templates (hello world, fibonacci, sort) — no actual code synthesis
-- **Code debugging** uses rule-based checks (unwrap(), unsafe, TODO) — no execution-based debugging
-- **compute_complexity()** uses simple heuristics (line count, branch count) — not cyclomatic complexity
-- **No support** for languages beyond Rust, Python, JavaScript
-
-### 3.12 `src/math.rs` (782 lines) — MathEngine
-
-**Purpose:** Mathematical computation and reasoning.
-
-**Structure:**
-- `MathEngine` struct: constants, identities, total_arithmetic, total_algebra, total_deductions, total_statistics
-- `MathExpr` enum: Number, Variable, BinaryOp, UnaryOp, FunctionCall
-- `BinaryOpKind` enum: Add, Sub, Mul, Div, Pow, Mod, Log, Max, Min, Eq, Neq, Gt, Lt, And, Or
-- `UnaryOpKind` enum: Neg, Abs, Sqrt, Exp, Sin, Cos, Tan
-- `Proposition` enum: Atomic, Not, And, Or, Implies, Iff, ForAll, Exists
-- `MathResult` struct: value, steps, confidence
-- `evaluate()`: Recursive expression evaluation
-- `solve_linear()`: Solves ax + b = c
-- `solve_quadratic()`: Solves ax² + bx + c = 0
-- `deduce()`: Checks modus ponens, modus tollens, hypothetical syllogism
-- `is_prime()`, `gcd()`, `lcm()`, `prime_factors()`: Number theory
-- `statistics()`: Mean, median, mode, std_dev, variance, min, max, quartiles
-
-**Engineering Assessment:**
-- **Comprehensive math operations** covering arithmetic, algebra, logic, number theory, statistics
-- **Clean expression tree** design for symbolic mathematics
-- **Propositional logic** support with basic inference rules
-- **Assumption**: Assumes all variables are known at evaluation time
-- **Assumption**: Assumes propositional logic is sufficient for reasoning
-
-**Critical Issues:**
-- **MathEngine is NOT integrated into the inference path** — it's a standalone utility
-- **No equation solving** beyond linear and quadratic
-- **No calculus** (differentiation, integration)
-- **No linear algebra** (matrix operations, eigenvalues)
-- **Propositional logic** only — no first-order or higher-order logic
-- **No integration** with the knowledge store for mathematical facts
-- **No learning** from mathematical problem-solving
-
-### 3.13 `src/tools.rs` (771 lines) — ToolEngine
-
-**Purpose:** External tool invocation (file ops, HTTP, calculator, etc.).
-
-**Structure:**
-- `ToolEngine` struct: tools (Vec<Tool>), usage_history, total_invocations, successful_invocations, api_keys
-- `ToolType` enum: FileRead, FileWrite, HttpGet, HttpPost, Calculator, DataTransform, WebSearch, ShellCommand, CodeExecution
-- `Tool` struct: name, description, tool_type, parameters, enabled
-- `ToolResult` struct: success, data, error, execution_time_ms
-- `set_api_key()`, `get_tool()`, `list_tools()`: Tool management
-- `invoke()`: Dispatches to specific tool implementations
-- `invoke_file_read/write()`: File operations
-- `invoke_http_get/post()`: HTTP requests (feature-gated)
-- `invoke_calculator()`: Recursive expression evaluator
-- `invoke_data_transform()`: JSON ↔ CSV conversion
-- `invoke_web_search()`: Placeholder (returns "not implemented")
-- `invoke_shell_command()`: Whitelisted shell commands
-- `invoke_code_execution()`: Returns "not implemented"
-
-**Engineering Assessment:**
-- **Clean tool abstraction** with uniform interface
-- **Safety measures**: Shell command whitelist, file path validation
-- **Feature gating**: HTTP tools require `--features http`
-- **Assumption**: Assumes tool invocation is synchronous
-- **Assumption**: Assumes all tools are available at all times
-
-**Critical Issues:**
-- **ToolEngine is NOT integrated into the inference path** — it's a standalone utility
-- **Web search** is a placeholder — returns "not implemented"
-- **Code execution** is a placeholder — returns "not implemented"
-- **Shell command whitelist** is restrictive (ls, cat, echo, pwd, whoami, date, uname) — no write operations
-- **No tool chaining** — tools cannot be composed
-- **No error recovery** — if a tool fails, there's no retry or fallback
-- **No authentication** for HTTP requests beyond API keys
-- **Calculator** is a separate implementation from MathEngine — code duplication
-
-### 3.14 `src/optimizer.rs` (613 lines) — NovaOptimizer
-
-**Purpose:** Gradient-based optimization with AdamW.
-
-**Structure:**
-- `NovaOptimizer` struct: learning_rate, beta1, beta2, epsilon, weight_decay, grad_clip_threshold, accumulation_steps, schedule (LRSchedule enum), step, adam_states
-- `LRSchedule` enum: Constant, Cosine (warmup_steps, total_steps, min_lr), LinearWarmupDecay, StepDecay
-- `AdamWState` struct: m (Vec<f32>), v (Vec<f32>), t (u64)
-- `GradientBuffer` struct: gradients for all model parameters
-- `init_adam_states()`: Initialize AdamW moment estimates
-- `get_current_lr()`: Compute learning rate based on schedule
-- `clip_gradients()`: Gradient clipping by global norm
-- `apply_gradients()`: Apply AdamW update to parameters (uses free function `adamw_update` to avoid borrow checker)
-- `compute_gradients_finite_diff()`: Central difference approximation (NOT backpropagation)
-
-**Engineering Assessment:**
-- **Correct AdamW implementation** with proper bias correction and weight decay
-- **Multiple LR schedules** (Constant, Cosine, LinearWarmupDecay, StepDecay)
-- **Gradient accumulation** support across multiple steps
-- **Assumption**: Assumes finite differences are a reasonable approximation of gradients
-- **Assumption**: Assumes all parameters are Vec<f32> (flat layout)
-
-**Critical Issues:**
-- **NovaOptimizer is NEVER called from trainer.rs** — the optimizer module is completely disconnected from the training pipeline
-- **Finite difference gradients** are O(n²) — requires 2n forward passes for n parameters
-- **No automatic differentiation** — gradients must be provided manually
-- **No parameter registration** — the optimizer doesn't know which parameters to optimize
-- **GradientBuffer** is defined but the parameter list is empty — no actual parameters are registered
-- The optimizer exists as a **standalone utility** with no integration into the training loop
-
-### 3.15 `src/dataset.rs` (1,022 lines) — NovaDataset
-
-**Purpose:** Dataset loading and preprocessing for training.
-
-**Structure:**
-- `NovaDataset` struct: examples, input_field, target_field, format, filters, prompt_template
-- `DatasetSource` enum: Csv, Json, Jsonl, Parquet, Text, HfDataset
-- `HFDatasetRef` struct: repo_id, subset, split, config
-- `FilterCondition` enum: Equals, Contains, MinLength, MaxLength, Regex, NonEmpty
-- `ColumnMapping` struct: input_column, target_column
-- `load_csv()`, `load_json()`, `load_jsonl()`, `load_parquet()`, `load_text()`, `load_hf_dataset()`: Data loading
-- `add_filter()`, `apply_filters()`: Data filtering
-- `split()`: Train/test split
-- `save_jsonl()`: Export to JSONL
-- `summary()`: Dataset statistics
-
-**Engineering Assessment:**
-- **Comprehensive data loading** supporting multiple formats
-- **HF dataset download** with 3 fallback strategies (HF API, raw URLs, Python library)
-- **Filtering pipeline** for data quality
-- **Assumption**: Assumes all datasets fit in memory
-- **Assumption**: Assumes CSV/JSON/JSONL have consistent column names
-
-**Critical Issues:**
-- **No streaming support** — entire dataset must fit in RAM
-- **No data augmentation** or preprocessing beyond filtering
-- **No tokenization** — data is stored as raw text
-- **HF dataset download** relies on external Python library as last resort
-- **No caching** of downloaded datasets
-- **No shuffling** within the dataset (shuffling is done in trainer)
-
-### 3.16 `src/model.rs` (583 lines) — NovaModelManager
-
-**Purpose:** Model serialization, loading, and management.
-
-**Structure:**
-- `NovaModelManager` struct: models_dir, available_models
-- `ModelConfig` struct: name, version, description, dim, num_cores, core_names, max_iterations, convergence_threshold, created_at, trained_on, accuracy
-- `ModelSnapshot` struct: config, cores (Vec<CoreSnapshot>), field_state, field_momentum, field_update_count, vocabulary, vocab_reverse, ngram_patterns, all_words, learned_responses, learned_inputs, knowledge
-- `CoreSnapshot` struct: id, name, memory, internal_state, gate, ssm_delta, ssm_delta_bias, ssm_a_log, ssm_b, ssm_c, ssm_d, ssm_h, ssm_time_mix_x, ssm_time_mix_w, ssm_time_mix_key, ssm_time_mix_value, ssm_time_mix_receptance, ssm_prev_x, use_ssm, use_time_mixing
-- `new()`, `with_dir()`, `scan_models()`, `read_config()`, `save_model()`, `load_model()`, `list_models()`, `delete_model()`, `upload_to_hf()`, `download_from_hf()`
-- `chrono_now()`: Approximate date calculation without chrono dependency
-
-**Engineering Assessment:**
-- **Complete serialization** of all model state (cores, field, vocabulary, n-grams, knowledge)
-- **JSON-based config** for model metadata
-- **HF Hub integration** for upload/download
-- **Assumption**: Assumes serialized state is compatible across versions
-- **Assumption**: Assumes JSON serialization is sufficient (no binary format)
-
-**Critical Issues:**
-- **No version compatibility check** — loading an old model with new code may fail
-- **No incremental saving** — entire model is serialized at once
-- **No compression** — model files are uncompressed JSON
-- **chrono_now()** is an approximation (adds days from a base date) — not accurate
-- **No validation** when loading — assumes saved state is valid
-- **HF upload/download** may fail silently
-
-### 3.17 `src/benchmark/` (531 lines total) — Benchmark Suite
-
-**Files:** `mod.rs` (172), `tasks.rs` (209), `metrics.rs` (43), `data.rs` (54), `compare.rs` (15), `improve.rs` (38)
-
-**Purpose:** Evaluation and benchmarking framework.
-
-**Structure:**
-- `NovaBenchmark` struct: model, results, detailed_results
-- `run_full_suite()`: Runs all benchmark categories
-- `run_language_understanding()`: sentiment_analysis, named_entity, paraphrase_detection
-- `run_reasoning_suite()`: logical_deduction, mathematical_reasoning, analogical_reasoning
-- `run_code_suite()`: code_completion, bug_detection
-- `run_long_context()`: long_summary, information_retrieval
-- `run_efficiency_suite()`: inference_speed, memory_usage
-- `run_memory_suite()`: short_term_memory, working_memory
-- `generate_training_data()`: Creates training data for weak tasks
-- `auto_improve()`: Placeholder training loop
-- `run_full_benchmark()`: Free function for quick benchmarking
-- `Metrics` struct: accuracy, precision, recall, f1_score, perplexity
-- `calculate_metrics()`: Computes metrics from predictions and targets
-- `generate_for_task()`: Generates training data
-- `compare_with_llama()`: Always returns 0.5
-- `run_comparison()`: Prints "Coming soon"
-- `fine_tune()`: Placeholder with dummy loss
-- `optimize_hyperparameters()`: Comments only
-
-**Engineering Assessment:**
-- **Well-structured benchmark framework** with clear task categories
-- **Multiple evaluation dimensions** (language, reasoning, code, memory, efficiency)
-- **Assumption**: Assumes string matching is sufficient for evaluation
-- **Assumption**: Assumes benchmark tasks are representative of real capabilities
-
-**Critical Issues:**
-- **All evaluators use string matching**: `answer.to_lowercase().contains(expected)` — no semantic evaluation
-- **compare_with_llama()** returns hardcoded 0.5 — not an actual comparison
-- **auto_improve()** is a placeholder — does nothing meaningful
-- **fine_tune()** is a placeholder — prints dummy loss values
-- **optimize_hyperparameters()** contains only comments — no implementation
-- **Benchmark tasks are hardcoded** — no way to add custom tasks without code changes
-- **No statistical significance** testing across multiple runs
-
----
-
-## 4. CUDA AUDIT
-
-### 4.1 Kernel Overview
-
-**File:** `kernels/ssm.cu` (358 lines, 8 kernels)
-
-| Kernel | Purpose | Grid/Block Dim | Shared Memory | Complexity |
-|--------|---------|----------------|---------------|------------|
-| `selective_scan_kernel` | SSM scan: h(t) = exp(Δ*A)*h(t-1) + Δ*B*x(t) | 1D grid, 1D blocks | Yes (delta broadcast + reduction) | O(d_inner × d_state) per step |
-| `ssm_transform_batch_kernel` | Apply SSM to batch of pulses | 1 block per pulse | No | O(d_inner × d_state) per pulse |
-| `field_update_kernel` | Weighted average + momentum | 1D grid, 1D blocks | No | O(dim) |
-| `field_diffuse_kernel` | Diffuse field to pulses | 2D grid (pulses × dim) | No | O(pulses × dim) |
-| `cosine_similarity_kernel` | Vocabulary matching | 1D grid, 1D blocks | No | O(vocab_size × dim) |
-| `vector_add_kernel` | Element-wise addition | 1D grid, 1D blocks | No | O(n) |
-| `vector_clamp_kernel` | Element-wise clamp | 1D grid, 1D blocks | No | O(n) |
-| `core_process_kernel` | Full core transform pipeline | 2D grid (pulses × cores) | No | O(pulses × cores × dim) |
-
-### 4.2 Kernel Quality Assessment
-
-**Strengths:**
-- All kernels use `__restrict__` pointers for compiler optimization
-- `pragma unroll` for d_state loop in selective_scan (small fixed size)
-- Shared memory used in selective_scan for delta broadcast
-- Proper grid/block dimension calculations
-- Fixed shared memory aliasing bug (was using two `extern __shared__` declarations)
-
-**Weaknesses:**
-- No occupancy optimization — grid/block sizes are hardcoded
-- No warp-level primitives (shfl, ballot, etc.)
-- No tensor core usage
-- No cooperative groups
-- No persistent kernel pattern for dynamic workloads
-- `core_process_kernel` is a monolithic kernel — should be split into separate transform kernels
-
-### 4.3 CUDA Runtime (`src/cuda.rs`)
-
-**Strengths:**
-- Clean abstraction with HardwareBackend enum
-- Comprehensive profiling with per-operation timing
-- Buffer cache reduces allocation overhead
-- Async streams for concurrent execution
-- Every GPU operation has CPU fallback
-- Global singleton with lazy initialization
-
-**Weaknesses:**
-- Only 8 kernels — many operations still run on CPU
-- No kernel fusion — each operation is a separate kernel launch
-- Buffer cache has no eviction policy
-- Async stream count is fixed at 4
-- Profiling always enabled (adds overhead)
-- No CUDA graphs for repeated computation patterns
-- No unified memory support
-- No multi-GPU support
-
-### 4.4 Build System (`build.rs`)
-
-**Strengths:**
-- PTX compilation via nvcc
-- Targets sm_75 (Turing) and optionally sm_80 (Ampere)
-- Embeds PTX path via environment variable
-- Only runs with --features cuda
-
-**Weaknesses:**
-- No fatbin generation (only PTX)
-- No JIT caching
-- No support for sm_90 (Hopper/Blackwell)
-- No Windows/ARM cross-compilation support
-- nvcc path is hardcoded — may fail on systems without CUDA toolkit in default location
-
----
-
-## 5. TRAINING PIPELINE
-
-### 5.1 Architecture
-
-The training pipeline consists of:
-
-1. **Data Loading** (dataset.rs): Load examples from various formats
-2. **Vocabulary Initialization** (trainer.rs): Create hash-based deterministic embeddings
-3. **Forward Pass** (trainer.rs → loom.rs → core.rs → field.rs): Process input through cores and field
-4. **Hash Memorization** (trainer.rs): Store input_hash → target_text in HashMap
-5. **State Update** (trainer.rs): Update core memory/state/gate and field state using hardcoded rules
-6. **N-gram Learning** (trainer.rs → loom.rs): Build n-gram patterns from training data
-7. **Knowledge Learning** (trainer.rs → knowledge.rs): Extract concepts and relations
-
-### 5.2 Training Modes
-
-| Mode | Method | Speed | Quality |
-|------|--------|-------|---------|
-| `train()` | Multi-epoch with forward/backward | Slow | Low (hash-based) |
-| `train_batch()` | Single batch with state updates | Medium | Low (hash-based) |
-| `train_neural()` | Full vector error with GPU | Medium | Low (no gradient descent) |
-| `train_one_pass()` | Hash-based with Rayon | Fast | Very Low (memorization only) |
-| `train_one_pass_ultra()` | Same as one_pass | Fast | Very Low (memorization only) |
-
-### 5.3 Critical Analysis
-
-**What training actually does:**
-1. Computes a hash of the input text (using `hash_input()` in loom.rs)
-2. Stores `hash → target_text` in `learned_responses` HashMap
-3. Runs forward pass through cores and field (for state updates)
-4. Updates core memory, internal_state, and gate using hardcoded rules:
-   - `core.memory[i] += lr * 0.5 * error[i]`
-   - `core.internal_state[i] += lr * 0.3 * error[i]`
-   - `core.gate += lr * 0.1 * error_mean`
-5. Updates field state using hardcoded rules:
-   - `field.state[i] += lr * 0.5 * error[i]`
-   - `field.momentum[i] += lr * 0.2 * error[i]`
-6. Learns n-gram patterns from input→target pairs
-7. Learns knowledge (concepts, relations, facts) from examples
-
-**What training does NOT do:**
-1. ❌ Does NOT compute gradients via backpropagation
-2. ❌ Does NOT update SSM parameters (A, B, C, delta, delta_bias, D)
-3. ❌ Does NOT update vocabulary embeddings (they're deterministic)
-4. ❌ Does NOT use NovaOptimizer (AdamW)
-5. ❌ Does NOT minimize a loss function via gradient descent
-6. ❌ Does NOT generalize beyond memorized examples
-
-### 5.4 The "Backward Pass" Illusion
-
-The code in `train_batch()` has a section labeled "Backward pass" that:
-1. Computes error = target_embedding - output_pulses[i].content
-2. Updates core memory: `core.memory[j] += lr * 0.5 * error[j]`
-3. Updates core internal_state: `core.internal_state[j] += lr * 0.3 * error[j]`
-4. Updates core gate: `core.gate += lr * 0.1 * error_mean`
-5. Updates field state: `field.state[j] += lr * 0.5 * error[j]`
-
-This is NOT backpropagation. It's a heuristic update rule that moves parameters toward the target embedding. There's no gradient computation, no chain rule, no loss minimization. The learning rates (0.5, 0.3, 0.1, 0.2) are arbitrary constants with no theoretical justification.
-
----
-
-## 6. INFERENCE PIPELINE
-
-### 6.1 Flow Diagram
-
-```
-User Input
-    │
-    ▼
-text_to_pulses() ────► Split by whitespace, create NovaPulse for each word
-    │
-    ▼
-process() ────► Main inference orchestration
-    │
-    ├──► Step 1: Exact hash match ────► Return learned_responses[hash] if found
-    │
-    ├──► Step 2: Conversational override ────► Returns None (disabled)
-    │
-    ├──► Step 3: Word-overlap matching ────► Find best match by word overlap
-    │
-    ├──► Step 4: Neural path (ALWAYS runs)
-    │       │
-    │       ├──► process_cores_parallel()
-    │       │       ├──► GPU: cuda::process_cores_batch()
-    │       │       └──► CPU: Rayon par_iter() over cores
-    │       │               └──► core.process() ────► 8 transforms × adaptive_depth iterations
-    │       │
-    │       └──► field.update() ────► Weighted average → SSM → Diffusion
-    │       │
-    │       └──► Adaptive convergence check ────► Repeat until convergence or max_iterations
-    │
-    └──► Step 5: Response selection
-            ├──► Exact match (from Step 1)
-            ├──► Overlap match (from Step 3)
-            ├──► N-gram generation
-            └──► Pulse-to-text (cosine similarity → hardcoded word list)
-```
-
-### 6.2 Key Parameters
-
-| Parameter | Value | Location | Effect |
-|-----------|-------|----------|--------|
-| max_iterations | 6 | loom.rs | Maximum field update iterations |
-| convergence_threshold | 0.12 | loom.rs | Field energy change threshold |
-| adaptive_depth | dynamic | core.rs | Number of transform iterations per core |
-| ngram_order | 3 | loom.rs | N-gram model order |
-| dim | configurable | main.rs | Embedding/state dimension |
-| num_cores | configurable | main.rs | Number of processing cores |
-
-### 6.3 Critical Analysis
-
-**Strengths:**
-- Multiple fallback strategies ensure some output is always produced
-- Adaptive convergence prevents infinite loops
-- Hybrid generation combines multiple approaches
-- GPU acceleration available for core processing
-
-**Weaknesses:**
-- Primary mechanism is hash lookup — no generalization
-- Neural path runs but its output is often overridden by hash/overlap matches
-- Pulse-to-text mapping is unreliable (falls back to 150 hardcoded words)
-- N-gram model is trained on the same data — no novel generation
-- LongContextManager is not integrated
-- KnowledgeStore is only used in one transform
-
----
-
-## 7. MODULE ANALYSIS
-
-### 7.1 Module Dependency Graph
+The architecture has **10 major modules** that together form a non-standard processing pipeline:
 
 ```
 main.rs
-  ├── loom.rs ────► core.rs ────► ssm.rs
-  │         └──► field.rs ────► ssm.rs
-  │         └──► pulse.rs
-  │         └──► knowledge.rs
-  │         └──► cuda.rs
-  │
-  ├── trainer.rs ────► loom.rs
-  │            └──► dataset.rs
-  │            └──► knowledge.rs
-  │
-  ├── model.rs
-  ├── coding.rs (standalone)
-  ├── math.rs (standalone)
-  ├── tools.rs (standalone)
-  ├── optimizer.rs (standalone)
-  ├── context.rs (standalone)
-  └── benchmark/
-        └── mod.rs, tasks.rs, metrics.rs, data.rs, compare.rs, improve.rs
+  ├── clap CLI entry point
+  └── dispatches to:
+
+Module              Purpose                              Lines
+──────────────────────────────────────────────────────────────
+pulse.rs            Continuous vector "token"            143
+field.rs            Global information field (O(n))      447
+core.rs             Adaptive processing units            643
+ssm.rs              State Space Model (Mamba-alike)      631
+loom.rs             Main orchestration engine           2557
+trainer.rs          Training pipeline                    1152
+optimizer.rs        AdamW with finite-difference         613
+knowledge.rs        Concept/relation/fact store          448
+context.rs          Long context sliding window          395
+model.rs            Save/load/serialize models           583
+dataset.rs          HF dataset loading/filtering         1022
+cuda.rs             GPU acceleration stub                188
+coding.rs           Code analysis/generation             (pending)
+math.rs             Math expression engine               (pending)
+tools.rs            External tool invocation             (pending)
 ```
 
-### 7.2 Integration Status
-
-| Module | Integrated into Inference? | Integrated into Training? | Status |
-|--------|---------------------------|---------------------------|--------|
-| pulse.rs | ✅ Yes | ✅ Yes | Active |
-| field.rs | ✅ Yes | ✅ Yes | Active |
-| core.rs | ✅ Yes | ✅ Yes | Active |
-| ssm.rs | ✅ Yes | ❌ No (params never updated) | Active but incomplete |
-| loom.rs | ✅ Yes | ✅ Yes | Active |
-| cuda.rs | ✅ Yes | ✅ Yes | Active (optional) |
-| knowledge.rs | ⚠️ Partial (one transform) | ✅ Yes | Underutilized |
-| context.rs | ❌ No | ❌ No | Dead code |
-| coding.rs | ❌ No | ❌ No | Standalone utility |
-| math.rs | ❌ No | ❌ No | Standalone utility |
-| tools.rs | ❌ No | ❌ No | Standalone utility |
-| optimizer.rs | ❌ No | ❌ No | Dead code |
-| dataset.rs | ❌ No | ✅ Yes | Training only |
-| model.rs | ❌ No | ✅ Yes | Save/load only |
-| benchmark/ | ❌ No | ❌ No | Evaluation only |
-
-### 7.3 Code Quality Metrics (Estimated)
-
-| Module | Lines | Functions | Structs | Complexity |
-|--------|-------|-----------|---------|------------|
-| main.rs | 1,150 | ~20 | 0 | Low (CLI dispatch) |
-| pulse.rs | 124 | ~8 | 1 | Low |
-| field.rs | 274 | ~15 | 1 | Medium |
-| core.rs | 357 | ~15 | 2 | Medium |
-| ssm.rs | 619 | ~20 | 1 | High |
-| loom.rs | 1,082 | ~25 | 1 | High |
-| trainer.rs | 1,139 | ~20 | 1 | High |
-| cuda.rs | 1,529 | ~30 | 6 | High |
-| knowledge.rs | 448 | ~15 | 4 | Medium |
-| context.rs | 395 | ~10 | 5 | Medium |
-| coding.rs | 755 | ~15 | 6 | Medium |
-| math.rs | 782 | ~20 | 5 | Medium |
-| tools.rs | 771 | ~15 | 4 | Medium |
-| optimizer.rs | 613 | ~10 | 4 | Medium |
-| dataset.rs | 1,022 | ~20 | 6 | Medium |
-| model.rs | 583 | ~15 | 4 | Medium |
-| benchmark/ | 531 | ~15 | 2 | Low |
-
----
-
-## 8. NEW MODULES AUDIT
-
-### 8.1 KnowledgeStore (`src/knowledge.rs`)
-
-**What it claims:** Structured knowledge storage with concepts, relations, and facts.
-
-**What it actually does:**
-- Stores concepts as string→embedding mappings (deterministic byte embeddings)
-- Stores relations as string triples (source, target, type)
-- Stores facts as string triples (subject, predicate, object)
-- Can find closest concept by cosine similarity
-- Can augment pulse content with knowledge
-- Can learn from examples by extracting words > 3 characters as concepts
-
-**Gap Analysis:**
-- Concept embeddings are deterministic byte mappings — no semantic structure
-- Relations are stored as strings — no embedding-based reasoning
-- Facts are stored as strings — no logical inference
-- Knowledge augmentation is a simple vector addition — no attention or weighting
-- No forgetting or consolidation mechanism
-- No integration with the main inference path (only called from knowledge_transform)
-
-### 8.2 LongContextManager (`src/context.rs`)
-
-**What it claims:** Long context management with sliding windows and hierarchical fields.
-
-**What it actually does:**
-- Defines ContextChunk, HierarchicalField, SlidingWindowSSM, ContextCompressor structs
-- Has methods for processing chunks and compressing context
-- Has a process() method that is never called
-
-**Gap Analysis:**
-- **Completely disconnected from the inference pipeline** — never instantiated or called
-- HierarchicalField requires NovaField to implement Clone + Debug (added as a fix)
-- No integration with text_to_pulses() or process() in loom.rs
-- No tests or benchmarks
-- The module is structurally complete but functionally dead
-
-### 8.3 CodingEngine (`src/coding.rs`)
-
-**What it claims:** Code analysis, generation, and debugging.
-
-**What it actually does:**
-- Pattern detection via string matching (contains(), regex)
-- Code generation via hardcoded templates (hello world, fibonacci, sort)
-- Debugging via rule-based checks (unwrap(), unsafe, TODO)
-- Complexity estimation via heuristics (line count, branch count)
-
-**Gap Analysis:**
-- No AST parsing — analysis is purely text-based
-- No semantic code understanding
-- Template-based generation cannot produce novel code
-- Rule-based debugging cannot find logical errors
-- Not integrated with the neural pipeline — standalone utility
-- Limited to Rust, Python, JavaScript
-
-### 8.4 MathEngine (`src/math.rs`)
-
-**What it claims:** Mathematical computation and reasoning.
-
-**What it actually does:**
-- Expression evaluation (arithmetic, functions)
-- Linear and quadratic equation solving
-- Propositional logic deduction (modus ponens, modus tollens, hypothetical syllogism)
-- Number theory (primality, GCD, LCM, prime factors)
-- Statistics (mean, median, mode, std_dev, variance, quartiles)
-
-**Gap Analysis:**
-- No calculus (differentiation, integration)
-- No linear algebra (matrix operations)
-- No first-order or higher-order logic
-- No integration with knowledge store
-- No learning from problem-solving
-- Not integrated with the neural pipeline — standalone utility
-
-### 8.5 ToolEngine (`src/tools.rs`)
-
-**What it claims:** External tool invocation for file ops, HTTP, calculator, data transform, web search, shell commands, code execution.
-
-**What it actually does:**
-- File read/write with path validation
-- HTTP GET/POST (feature-gated)
-- Calculator (recursive expression evaluator — duplicate of MathEngine)
-- JSON ↔ CSV conversion
-- Web search: returns "not implemented"
-- Shell commands: whitelisted safe commands only
-- Code execution: returns "not implemented"
-
-**Gap Analysis:**
-- Web search and code execution are placeholders
-- Calculator duplicates MathEngine functionality
-- No tool chaining or composition
-- No error recovery
-- Not integrated with the neural pipeline — standalone utility
-- Shell command whitelist is too restrictive for practical use
-
-### 8.6 NovaOptimizer (`src/optimizer.rs`)
-
-**What it claims:** Gradient-based optimization with AdamW, LR scheduling, gradient clipping.
-
-**What it actually does:**
-- Implements correct AdamW update rule
-- Supports multiple LR schedules (Constant, Cosine, LinearWarmupDecay, StepDecay)
-- Gradient clipping by global norm
-- Gradient accumulation across steps
-- Finite difference gradient approximation
-
-**Gap Analysis:**
-- **Never called from trainer.rs** — completely disconnected
-- Finite difference gradients are O(n²) and numerically unstable
-- No automatic differentiation
-- No parameter registration mechanism
-- GradientBuffer has empty parameter list
-- The optimizer is structurally complete but functionally dead
-
----
-
-## 9. LEARNED VS HARDCODED CAPABILITY AUDIT
-
-### 9.1 What Is Actually Learned (via Hash Memorization)
-
-| Capability | Learned? | Mechanism | Quality |
-|------------|----------|-----------|---------|
-| Input→output mapping | ✅ Yes | HashMap<u64, String> | Exact match only |
-| N-gram patterns | ✅ Yes | HashMap<(String, String), Vec<String>> | Statistical |
-| Knowledge concepts | ✅ Yes | HashMap<String, Concept> | Deterministic embeddings |
-| Knowledge relations | ✅ Yes | Vec<Relation> | String-based |
-| Knowledge facts | ✅ Yes | Vec<Fact> | String-based |
-
-### 9.2 What Is Hardcoded
-
-| Capability | Hardcoded? | Details |
-|------------|------------|---------|
-| Vocabulary embeddings | ✅ Yes | Deterministic byte-to-float mapping |
-| SSM parameters (A, B, C, Δ, D) | ✅ Yes | Never updated during training |
-| SSM time-mixing parameters | ✅ Yes | Never updated during training |
-| Core transform order | ✅ Yes | Fixed: syntax → semantic → memory → reasoning → pattern → default → SSM → knowledge |
-| Transform implementations | ✅ Yes | tanh, amplify/attenuate, pairwise diff, etc. |
-| Field update rules | ✅ Yes | Weighted average → momentum → diffusion |
-| Convergence threshold | ✅ Yes | 0.12 |
-| Max iterations | ✅ Yes | 6 |
-| N-gram order | ✅ Yes | 3 |
-| Pulse encoding | ✅ Yes | Byte-to-float: b/255*2-1 |
-| Word list (fallback) | ✅ Yes | 150 hardcoded words |
-| Code templates | ✅ Yes | hello, fibonacci, sort |
-| Debug rules | ✅ Yes | unwrap(), unsafe, TODO checks |
-| Math operations | ✅ Yes | Expression evaluation, equation solving |
-| Tool implementations | ✅ Yes | File ops, HTTP, calculator |
-| Benchmark tasks | ✅ Yes | Hardcoded task definitions |
-| Benchmark evaluators | ✅ Yes | String matching |
-
-### 9.3 Verdict
-
-**Nova Core learns approximately 5% of its behavior** (hash mappings, n-gram statistics, knowledge graph entries) and **hardcodes approximately 95%** (all neural computations, transforms, parameters, thresholds, vocabulary, fallbacks).
-
-The "learning" that occurs is:
-1. **Memorization** of input→output pairs (hash lookup)
-2. **Statistical** n-gram patterns (word co-occurrence)
-3. **Symbolic** knowledge graph entries (string-based)
-
-The "learning" that does NOT occur:
-1. ❌ Gradient-based optimization of any parameter
-2. ❌ SSM parameter adaptation
-3. ❌ Vocabulary embedding learning
-4. ❌ Transform weight learning
-5. ❌ Field dynamic learning
-6. ❌ Any form of generalization
-
----
-
-## 10. REASONING AUDIT
-
-### 10.1 Reasoning Transforms
-
-Nova Core implements two reasoning-related transforms in `core.rs`:
-
-**reasoning_transform:**
-- Computes pairwise differences between all pulses: `content[i] += Σ(content[j] - content[i]) / n`
-- This is O(n²) — computes differences for all pulse pairs
-- The result is that each pulse moves toward the average of all other pulses
-- **This is NOT reasoning** — it's a diffusion operation that homogenizes pulse content
-
-**pattern_transform:**
-- Computes pairwise cosine similarities between all pulses
-- Amplifies content based on similarity to other pulses
-- This is O(n²) — computes similarities for all pulse pairs
-- **This is NOT pattern recognition** — it's a similarity-based amplification
-
-### 10.2 Actual Reasoning Capabilities
-
-**Nova Core has zero reasoning capabilities.** The transforms labeled "reasoning" and "pattern" are simple mathematical operations (pairwise difference, cosine similarity) that do not perform logical inference, causal reasoning, or any form of abstract thought.
-
-The system's "reasoning" is limited to:
-1. **Hash lookup**: If it has seen the exact input before, return the memorized response
-2. **Word overlap**: If it has seen a similar input, return the closest match
-3. **N-gram prediction**: Statistical word sequence completion
-4. **Field dynamics**: Mechanical information propagation (no reasoning)
-
-### 10.3 Comparison to Actual Reasoning Systems
-
-| Capability | Nova Core | GPT-4 | Human |
-|------------|-----------|-------|-------|
-| Logical deduction | ❌ None | ✅ Strong | ✅ Strong |
-| Causal reasoning | ❌ None | ✅ Moderate | ✅ Strong |
-| Analogical reasoning | ❌ None | ✅ Moderate | ✅ Strong |
-| Mathematical reasoning | ❌ None | ✅ Strong | ✅ Strong |
-| Commonsense reasoning | ❌ None | ✅ Strong | ✅ Strong |
-| Multi-step reasoning | ❌ None | ✅ Strong | ✅ Strong |
-| Counterfactual reasoning | ❌ None | ✅ Moderate | ✅ Strong |
-
----
-
-## 11. KNOWLEDGE REPRESENTATION
-
-### 11.1 KnowledgeStore Architecture
-
-The KnowledgeStore uses three main structures:
-
-1. **Concepts**: `HashMap<String, Concept>` where Concept has:
-   - `name: String`
-   - `embedding: Vec<f32>` (deterministic byte-to-float mapping)
-   - `category: String`
-   - `frequency: usize`
-
-2. **Relations**: `Vec<Relation>` where Relation has:
-   - `source: String`
-   - `target: String`
-   - `relation_type: String`
-   - `weight: f32`
-
-3. **Facts**: `Vec<Fact>` where Fact has:
-   - `subject: String`
-   - `predicate: String`
-   - `object: String`
-   - `category: String`
-   - `confidence: f32`
-
-### 11.2 Knowledge Quality Assessment
-
-**Strengths:**
-- Clean separation of concepts, relations, and facts
-- Category-based organization enables domain-specific retrieval
-- Frequency tracking for concepts
-- Confidence scoring for facts
-
-**Weaknesses:**
-- **Concept embeddings are deterministic byte mappings** — no semantic structure. The embedding for "cat" and "dog" are as different as "cat" and "quantum" because the mapping is purely byte-based.
-- **No embedding learning** — concepts are not placed in a semantic space
-- **No inference** — facts are stored as strings with no logical inference engine
-- **No forgetting** — concepts accumulate without bound
-- **No consolidation** — new knowledge doesn't reorganize existing knowledge
-- **No integration** — only used in knowledge_transform, which is one of 8 transforms
-
-### 11.3 Knowledge Augmentation
-
-`augment_pulse_with_knowledge()` works by:
-1. Finding the closest concept to each pulse (by cosine similarity)
-2. Adding the concept embedding to the pulse content: `content[i] += concept.embedding[i] * 0.1`
-
-This is a simple vector addition with a fixed weight of 0.1. There's no attention mechanism, no gating, no learned weighting.
-
----
-
-## 12. CODING INTELLIGENCE AUDIT
-
-### 12.1 Code Analysis
-
-`analyze_code()` detects patterns via string matching:
-- `code.contains("fn ")` → RustFunction
-- `code.contains("def ")` → PythonFunction
-- `code.contains("class ")` → ClassDefinition
-- `code.contains("impl ")` → Implementation
-- `code.contains("for ")` → Loop
-- `code.contains("if ")` → Conditional
-- `code.contains("match ")` → PatternMatch
-- `code.contains("unsafe ")` → UnsafeBlock
-- `code.contains("async ")` → AsyncFunction
-- Regex for error handling patterns
-
-**Verdict:** This is **syntax highlighting, not code analysis**. No AST parsing, no semantic understanding, no control flow analysis, no data flow analysis.
-
-### 12.2 Code Generation
-
-`generate_code()` dispatches to language-specific generators that use hardcoded templates:
-
-**Rust templates:**
-- "hello" → `fn main() { println!("Hello, world!"); }`
-- "greet" → `fn greet(name: &str) -> String { format!("Hello, {}!", name) }`
-- "fibonacci" → `fn fibonacci(n: u64) -> u64 { match n { 0 => 0, 1 => 1, _ => fibonacci(n-1) + fibonacci(n-2) } }`
-- "sort" → `fn quicksort<T: Ord>(arr: &mut [T]) { ... }`
-
-**Python templates:** Similar hardcoded templates
-**JavaScript templates:** Similar hardcoded templates
-
-**Verdict:** This is **template filling, not code generation**. No novel code synthesis, no understanding of requirements, no adaptation to context.
-
-### 12.3 Code Debugging
-
-`debug_code()` uses rule-based checks:
-
-**Rust checks:**
-- Contains `.unwrap()` → "Unwrap without error handling"
-- Contains `unsafe` → "Unsafe code block"
-- Contains `TODO` or `FIXME` → "Incomplete implementation"
-- Lines > 100 chars → "Line too long"
-
-**Python checks:**
-- Mutable default arguments → "Mutable default argument"
-- Bare `except:` → "Bare except clause"
-- Contains `TODO` or `FIXME` → "Incomplete implementation"
-
-**JavaScript checks:**
-- `==` used → "Use === instead of =="
-- `var` used → "Use let or const instead of var"
-- Contains `TODO` or `FIXME` → "Incomplete implementation"
-
-**Verdict:** This is **linting, not debugging**. No execution-based debugging, no logic error detection, no runtime analysis.
-
-
----
-
-## 13. LEARNING VS HARD-CODED ANALYSIS
-
-### 13.1 Executive Summary
-
-This section provides a definitive, source-code-verified accounting of **every capability in Nova Core**, classified as either **learned** (trained from data via parameter updates) or **hardcoded** (rule-based, template-driven, or deterministic). The distinction is critical: a capability that exists as a helper library, scaffolding, placeholder, stub, wrapper, or rule-based logic is **NOT a learned LLM capability**.
-
-**Bottom line: ~5% of Nova Core's behavior is learned (hash memorization + n-gram statistics + symbolic knowledge graph entries). ~95% is hardcoded (all neural computations, transforms, parameters, thresholds, vocabulary, fallbacks).**
-
-### 13.2 Complete Capability Inventory
-
-#### 13.2.1 Learned Capabilities (Trained from Data)
-
-| Capability | What Is Learned | How It's Stored | Verification in Source |
-|------------|----------------|-----------------|----------------------|
-| Input→output mapping | Hash of input text → target response string | `HashMap<u64, String>` in `loom.rs:20` (`learned_responses`) | `train_batch()` at `trainer.rs:338`: `model.learned_responses.insert(input_hash, example.target.clone())` |
-| Input text storage | Hash of input text → original input string | `HashMap<u64, String>` in `loom.rs:22` (`learned_inputs`) | `train_batch()` at `trainer.rs:339`: `model.learned_inputs.insert(input_hash, example.input.clone())` |
-| N-gram word predictions | Context hash → list of (next_word, confidence) pairs | `HashMap<u64, Vec<(String, f32)>>` in `loom.rs:28` (`ngram_patterns`) | `learn_ngrams()` at `loom.rs:923-985`: builds bigram/trigram transitions from training data |
-| Knowledge concepts | Word → Concept mapping with deterministic embedding | `HashMap<String, Concept>` in `knowledge.rs` | `learn_from_example()` at `knowledge.rs`: extracts words > 3 chars as concepts |
-| Knowledge relations | Source → Target → RelationType triples | `Vec<Relation>` in `knowledge.rs` | `learn_from_example()`: stores word co-occurrence as relations |
-| Knowledge facts | Subject → Predicate → Object triples | `Vec<Fact>` in `knowledge.rs` | `learn_from_example()`: stores word pairs as facts |
-| Core memory values | Per-core memory vector updated during training | `Vec<f32>` in `core.rs:31` (`memory`) | `train_batch()` at `trainer.rs:371-381`: `core.memory[mem_idx] += mem_error * core_lr` |
-| Core internal state | Per-core state vector updated during training | `Vec<f32>` in `core.rs:33` (`internal_state`) | `train_batch()` at `trainer.rs:385-389`: `core.internal_state[j] += state_error * state_lr` |
-| Core gate values | Per-core scalar gate updated during training | `f32` in `core.rs:34` (`gate`) | `train_batch()` at `trainer.rs:392-396`: gate adjusted based on loss |
-| Field state | Shared field vector updated during training | `Vec<f32>` in `field.rs` (`state`) | `train_batch()` at `trainer.rs:400-413`: `field_state[i] += diff * field_lr` |
-| Field momentum | Shared field momentum vector updated during training | `Vec<f32>` in `field.rs` (`momentum`) | `train_batch()` at `trainer.rs:412`: `field_momentum[i] = field_momentum[i] * 0.9 + diff * 0.1` |
-
-**Critical observation:** Every "learned" parameter above is updated via **hardcoded heuristic rules** (e.g., `lr * 0.5`, `lr * 0.3`, `lr * 0.2`), NOT via gradient descent. The update rules are:
-- `core.memory[i] += lr * 0.5 * (target - current)` — heuristic push toward target
-- `core.internal_state[i] += lr * 0.3 * (target - current)` — heuristic push toward target
-- `core.gate = gate * 0.95 + (0.9 or 0.5) * 0.05` — heuristic adjustment
-- `field.state[i] += lr * 0.2 * (target - current)` — heuristic push toward target
-
-These are **not gradient-based updates**. They are arbitrary heuristic rules that happen to move values toward target embeddings.
-
-#### 13.2.2 Hardcoded Capabilities (NOT Learned)
-
-| Capability | What's Hardcoded | Source Location | Why It's NOT Learned |
-|------------|-----------------|-----------------|---------------------|
-| **SSM parameters (A, B, C, Δ, D)** | Initialized once, never updated | `ssm.rs:49-55` in `StateSpace::new()` | `train_batch()` and `train_neural()` never call any SSM parameter update function. The SSM `a_log`, `b`, `c`, `delta`, `delta_bias`, `d` fields remain at initialization forever. |
-| **SSM time-mixing parameters** | Initialized once, never updated | `ssm.rs:57-63` in `StateSpace::new()` | `time_mix_x`, `time_mix_w`, `time_mix_key`, `time_mix_value`, `time_mix_receptance`, `prev_x` are never modified after construction. |
-| **Vocabulary embeddings** | Deterministic byte-to-float mapping | `trainer.rs:121-149` in `init_vocabulary()` | Each word's embedding is computed as `hash(word) → seeded_rng.gen_range(-0.3..0.3)`. Same word always produces same embedding. No gradient flow. |
-| **Core transform order** | Fixed pipeline: syntax → semantic → memory → reasoning → pattern → default → SSM → knowledge | `core.rs:96-124` in `process()` | The `match self.name.as_str()` block has a fixed order of transform calls. No learned routing. |
-| **Syntax transform** | `content[i] = tanh(content[i]) * factor` | `core.rs:127-135` | Pure mathematical function. No learned parameters. |
-| **Semantic transform** | Amplify if `abs(x) > 0.3`, attenuate otherwise | `core.rs:137-150` | Rule-based threshold at 0.3. No learned parameters. |
-| **Memory transform** | `memory[i] = memory[i] * 0.85 + content[0] * 0.15` | `core.rs:152-169` | Fixed blending ratios (0.85, 0.15, 0.3, 0.6, 0.99, 0.01). No learned parameters. |
-| **Reasoning transform** | `content[i] += (content[i] - content[i-1]) * 0.25` | `core.rs:171-181` | Pairwise difference with fixed coefficient 0.25/0.15. O(n²). No learned parameters. |
-| **Pattern transform** | Cosine similarity with threshold 0.7 | `core.rs:183-196` | Fixed similarity threshold 0.7. Fixed weight boost 0.1. O(n²). No learned parameters. |
-| **Field update rules** | Weighted average → momentum blend → diffusion | `field.rs` `update()` method | Fixed formulas: `state = momentum * state + (1-momentum) * avg`, `content[i] += diffusion * (state - content[i])`. No learned parameters. |
-| **Convergence threshold** | 0.12 | `loom.rs:69` | Hardcoded constant. Not learned from data. |
-| **Max iterations** | 6 | `loom.rs:68` | Hardcoded constant. Not learned from data. |
-| **N-gram order** | 3 | `loom.rs:78` | Hardcoded constant. Not learned from data. |
-| **Pulse encoding** | `(b as f32) / 255.0 * 2.0 - 1.0` | `pulse.rs` `from_text()` | Deterministic byte-to-float mapping. No learned component. |
-| **Fallback word list** | 150 hardcoded English words | `loom.rs:114-149` | Used when cosine similarity fails. Not learned. |
-| **Code analysis** | `code.contains("fn ")` → RustFunction | `coding.rs` `analyze_code()` | String matching. No AST parsing. No learned patterns. |
-| **Code generation** | Hardcoded templates for "hello", "fibonacci", "sort" | `coding.rs` `generate_code()` | Template filling. No novel code synthesis. |
-| **Code debugging** | `code.contains(".unwrap()")` → "Unwrap without error handling" | `coding.rs` `debug_code()` | Rule-based linting. No execution-based debugging. |
-| **Math expression evaluation** | Recursive tree evaluation | `math.rs` `evaluate()` | Symbolic computation. No learned math. |
-| **Math equation solving** | `solve_linear()`, `solve_quadratic()` | `math.rs` | Closed-form formulas. No learned solving. |
-| **Propositional logic** | Modus ponens, modus tollens, syllogism | `math.rs` `deduce()` | 3 hardcoded inference rules. No learned reasoning. |
-| **Tool implementations** | File read/write, HTTP, calculator, data transform | `tools.rs` | All tool logic is hardcoded Rust code. No learned tool use. |
-| **Web search** | Returns `"not implemented"` | `tools.rs` `invoke_web_search()` | Placeholder stub. |
-| **Code execution** | Returns `"not implemented"` | `tools.rs` `invoke_code_execution()` | Placeholder stub. |
-| **Benchmark evaluators** | `answer.to_lowercase().contains(expected)` | `benchmark/tasks.rs` | String matching. No semantic evaluation. |
-| **Benchmark comparisons** | Always returns 0.5 | `benchmark/compare.rs` | Placeholder stub. |
-| **Benchmark improvements** | Prints dummy loss values | `benchmark/improve.rs` | Placeholder stub. |
-| **LongContextManager** | Entire module is dead code | `context.rs` | Never instantiated or called from inference. |
-| **NovaOptimizer** | Entire module is dead code | `optimizer.rs` | Never called from trainer.rs. |
-
-### 13.3 If/Else Routing in Inference
-
-The inference pipeline in `NovaLoom::process()` (`loom.rs:775-916`) uses a strict priority-based if/else chain:
+### 1.2 Execution Flow (High-Level)
 
 ```
-Step 1: if learned_responses.contains_key(&input_hash) → return memorized response (EXACT MATCH)
-Step 2: if conversational_override(text) → return hardcoded reply (DISABLED - returns None)
-Step 3: if word overlap match found with score >= 0.4 → return overlap response (BAG OF WORDS)
-Step 4: ALWAYS run neural path (cores + field) for stats accumulation
-Step 5: if exact match exists → return it (HASH LOOKUP)
-Step 6: if overlap match exists → return it (BAG OF WORDS)
-Step 7: if vocabulary exists AND n-gram patterns exist → generate via n-grams (STATISTICAL)
-Step 8: if vocabulary exists but no n-grams → return "not distilled" message (HARDCODED STRING)
-Step 9: if vocabulary exists → map pulses to vocab (COSINE SIMILARITY)
-Step 10: else → pulses_to_text() fallback (150 HARDCODED WORDS)
+CLI input string
+    │
+    ▼
+NovaLoom::process(text)
+    │
+    ├── 1. Check learned_responses[hash(text)] ──► return cached answer
+    ├── 2. Check partial hash matches ──► return cached answer
+    ├── 3. Check if tool input ──► route to ToolEngine
+    ├── 4. Check if math input ──► route to MathEngine
+    ├── 5. Check if code input ──► route to CodingEngine
+    │
+    └── 6. Neural path (PRIMARY):
+            text_to_pulses(text)    ──► Vec<NovaPulse>
+            process_cores_parallel()  ──► cores transform pulses
+            field.update()            ──► field diffuses info to pulses
+            [iterate until convergence or max_iterations]
+            apply_multi_core_semantic_consensus()
+            map_pulses_to_vocab()     ──► cosine similarity nearest word
+            ──► return output string
 ```
 
-**Key observation:** The neural path (cores + field) runs every time but its output is **only used as a last resort** (steps 8-10). The primary inference mechanism is hash lookup (step 1/5), which is pure memorization with zero generalization.
+### 1.3 Folder Structure
 
-### 13.4 Coding/Math/Tools: Helper Libraries, NOT LLM Capabilities
-
-**CodingEngine, MathEngine, and ToolEngine are standalone Rust libraries** that happen to be in the same crate as the neural architecture. They are:
-
-1. **NOT called from the inference pipeline** — `NovaLoom::process()` never invokes any of these engines
-2. **NOT trained** — they have no learned parameters
-3. **NOT integrated** — the model cannot decide to use them based on input
-4. **Purely rule-based** — all their behavior is hardcoded Rust code
-
-To use these engines, a user must:
-1. Import the module
-2. Create an instance of the engine
-3. Call the appropriate method with explicit parameters
-
-This is the same as using any Rust library (e.g., `serde_json`, `regex`). It is NOT an LLM capability.
-
-### 13.5 Roadmap: Converting Hardcoded to Learned
-
-| Current Hardcoded Component | What Would Need to Change | Difficulty | Priority |
-|---------------------------|--------------------------|------------|----------|
-| SSM parameters (A, B, C, Δ, D) | Implement gradient computation and AdamW updates for SSM params | HIGH | CRITICAL |
-| Vocabulary embeddings | Replace deterministic mapping with learned embedding table + gradient updates | HIGH | CRITICAL |
-| Core transform weights | Make transform coefficients learnable (e.g., learned gating per transform) | HIGH | HIGH |
-| Field update rules | Replace fixed formulas with learned update functions (e.g., small MLP) | HIGH | HIGH |
-| Convergence threshold | Learn from validation data or make adaptive | LOW | MEDIUM |
-| Max iterations | Learn optimal iteration count per input | MEDIUM | LOW |
-| N-gram order | Learn optimal context length per domain | LOW | LOW |
-| Code analysis | Replace string matching with AST-based neural code model | VERY HIGH | LOW |
-| Code generation | Replace templates with actual neural code generation | VERY HIGH | LOW |
-| Math solving | Replace symbolic computation with learned math reasoning | VERY HIGH | LOW |
-| Tool use | Implement learned tool selection and chaining | VERY HIGH | LOW |
+```
+nova_core_pro_V1/
+├── Cargo.toml                    # Dependencies, features (cuda, http)
+├── build.rs                      # PTX kernel compilation
+├── kernels/
+│   └── ssm.cu                    # CUDA SSM kernel (unused)
+├── models/                       # Saved .nova model files
+├── src/
+│   ├── main.rs                   # CLI entry point (1139 lines)
+│   ├── loom.rs                   # Orchestrator (2557 lines)
+│   ├── pulse.rs                  # Continuous vectors (143 lines)
+│   ├── field.rs                  # Field dynamics (447 lines)
+│   ├── core.rs                   # Adaptive cores (643 lines)
+│   ├── ssm.rs                    # State Space Model (631 lines)
+│   ├── trainer.rs                # Training pipeline (1152 lines)
+│   ├── optimizer.rs              # AdamW + finite diff (613 lines)
+│   ├── knowledge.rs              # Knowledge store (448 lines)
+│   ├── context.rs                # Long context (395 lines)
+│   ├── model.rs                  # Serialization (583 lines)
+│   ├── dataset.rs                # Data loading (1022 lines)
+│   ├── cuda.rs                   # GPU stub (188 lines)
+│   ├── coding.rs                 # Code engine (pending read)
+│   ├── math.rs                   # Math engine (pending read)
+│   ├── tools.rs                  # Tool engine (pending read)
+│   └── benchmark/                # Benchmarking suite
+├── convert_*.py                  # Python converters (HF → .nova)
+└── *.py                          # Training/download scripts
+```
 
 ---
 
-## 14. COMPARISON WITH MODERN LLMs
+## PHASE 2 — DATA FLOW (Complete Trace)
 
-### 14.1 Architecture Comparison
+Trace: **"What is the capital of France?"**
 
-| Aspect | Nova Core | ChatGPT (GPT-4) | DeepSeek-V3 | Qwen 2.5 | Llama 3 | Gemma 2 | Mistral |
-|--------|-----------|-----------------|-------------|----------|---------|---------|---------|
-| **Base architecture** | Field dynamics + SSM + pulse | Transformer decoder | MoE Transformer | Transformer decoder | Transformer decoder | Transformer decoder | Transformer decoder |
-| **Attention mechanism** | O(n) field dynamics (weighted avg) | O(n²) multi-head self-attention | O(n²) multi-head + MoE | O(n²) multi-head self-attention | O(n²) multi-head self-attention | O(n²) multi-head self-attention | O(n²) multi-head + sliding window |
-| **Context length** | 2048 (unused) | 128K (GPT-4 Turbo) | 128K | 128K | 128K (Llama 3) | 8K | 32K |
-| **Parameters** | ~10K (all hardcoded) | ~1.8T (GPT-4) | ~671B (37B active) | ~72B (Qwen 72B) | ~405B (Llama 3 405B) | ~7B | ~7B (Mistral 7B) |
-| **Training data** | Tiny synthetic examples | Internet-scale (trillions tokens) | Internet-scale | Internet-scale | Internet-scale | Internet-scale | Internet-scale |
-| **GPU training** | Optional, 8 kernels | Massive distributed training | 2,788K H800 GPU-hours | Massive distributed | Massive distributed | Massive distributed | Massive distributed |
-| **Inference speed** | O(n) theoretical | O(n²) with optimizations | O(n) with MoE | O(n²) with optimizations | O(n²) with optimizations | O(n²) with optimizations | O(n) with sliding window |
+### Stage 1: Input → CLI Parsing
+```
+Input string: "What is the capital of France?"
+    │
+    ▼
+main.rs: Commands::Run { input: "What is the capital of France?" }
+    │
+    ├── nova.process("What is the capital of France?")
+```
 
-### 14.2 Training Comparison
+### Stage 2: Hash Check (Memoization)
+```rust
+// loom.rs line 1737
+let input_hash = hash_text("What is the capital of France?");
+// hash_text: simple byte folding: acc = acc.wrapping_mul(31).wrapping_add(b)
+// Returns u64 hash
+// 
+// IF learned_responses contains this hash → RETURN cached answer immediately
+// This is PURE MEMORIZATION. No computation.
+// 
+// IF partial match found via learned_inputs → RETURN cached answer
+```
 
-| Aspect | Nova Core | Modern LLMs |
-|--------|-----------|-------------|
-| **Optimization algorithm** | Hash-based memorization (NO gradient descent) | AdamW with gradient descent |
-| **Loss function** | MSE against target word embeddings | Cross-entropy (next token prediction) |
-| **Backpropagation** | ❌ NOT implemented | ✅ Automatic differentiation |
-| **Parameter updates** | Heuristic rules (lr * 0.5, lr * 0.3) | Gradient-based (AdamW, SGD, etc.) |
-| **Learning rate schedule** | Simple decay (lr *= 0.98) | Cosine, warmup, decay, constant |
-| **Batch size** | Auto-detected (4-64) | Thousands to millions |
-| **Training parallelism** | Rayon CPU + optional GPU | Distributed across thousands of GPUs |
-| **Data preprocessing** | Basic filtering | Tokenization, dedup, quality filtering |
-| **Curriculum learning** | ❌ None | ✅ Often used |
-| **Mixed precision** | ❌ None | ✅ FP16/BF16/FP8 |
-| **Gradient checkpointing** | ❌ None | ✅ Standard practice |
-| **ZeRO optimization** | ❌ None | ✅ Standard practice |
+**If NOT memorized → proceed to neural path.**
 
-### 14.3 Reasoning Comparison
+### Stage 3: Tool/Math/Code Routing
+```rust
+// is_tool_input → checks for "read file", "http get", etc. → NO
+// is_math_input → checks for numbers, operators, "solve", etc. → NO  
+// is_code_input → checks for "fn ", "def ", "function", etc. → NO
+```
 
-| Capability | Nova Core | ChatGPT | DeepSeek | Qwen | Llama 3 | Gemma | Mistral |
-|------------|-----------|---------|----------|------|---------|-------|---------|
-| **Chain-of-thought** | ❌ None | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Moderate | ✅ Strong |
-| **Logical deduction** | ❌ None (MathEngine standalone) | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Moderate | ✅ Strong |
-| **Mathematical reasoning** | ❌ None (MathEngine standalone) | ✅ Strong | ✅ Strong (math specialist) | ✅ Strong | ✅ Strong | ✅ Moderate | ✅ Strong |
-| **Causal reasoning** | ❌ None | ✅ Moderate | ✅ Moderate | ✅ Moderate | ✅ Moderate | ⚠️ Basic | ✅ Moderate |
-| **Analogical reasoning** | ❌ None | ✅ Moderate | ✅ Moderate | ✅ Moderate | ✅ Moderate | ⚠️ Basic | ✅ Moderate |
-| **Multi-step reasoning** | ❌ None | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Moderate | ✅ Strong |
-| **Commonsense reasoning** | ❌ None | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Strong | ✅ Moderate | ✅ Strong |
-| **Counterfactual reasoning** | ❌ None | ✅ Moderate | ✅ Moderate | ✅ Moderate | ✅ Moderate | ⚠️ Basic | ✅ Moderate |
+### Stage 4: text_to_pulses() — "Tokenization"
+```rust
+// loom.rs line 138
+fn text_to_pulses("What is the capital of France?") {
+    text.split_whitespace()     // ["What", "is", "the", "capital", "of", "France?"]
+        .enumerate()
+        .map(|(pos, word)| NovaPulse::from_text(word, dim=64, pos))
+}
+```
 
-### 14.4 Memory & Context Comparison
+For each word, `NovaPulse::from_text()`:
+```rust
+// pulse.rs line 57
+fn from_text("France?", dim=64, pos=5) {
+    let mut content = vec![0.0; 64];
+    let bytes = "France?".as_bytes();  // [70, 114, 97, 110, 99, 101, 63]
+    
+    for (i, &b) in bytes.iter().enumerate() {
+        if i < 64 {
+            content[i] = (b as f32) / 255.0 * 2.0 - 1.0;  // Normalize byte to [-1, 1]
+        }
+    }
+    content[0] += (7_f32 / 20.0).min(0.5);  // Word length signal
+    
+    NovaPulse {
+        content,                // [0.549, -0.106, -0.239, -0.137, ...]
+        semantic_content: content.clone(),
+        weight: 0.466,          // word.len() / 15.0
+        entropy: 0.3,           // 0.3 if word.len() >= 4
+        position: 5,
+        converged: false,
+    }
+}
+```
 
-| Aspect | Nova Core | Modern LLMs |
-|--------|-----------|-------------|
-| **Working memory** | Field state (Vec<f32>) | KV cache (billions of values) |
-| **Long-term memory** | HashMap<u64, String> (hash memorization) | Model weights (gradient updates) |
-| **Context window** | Current input only (LongContextManager unused) | 8K-128K tokens |
-| **Retrieval** | KnowledgeStore (string-based, not integrated) | RAG systems (integrated) |
-| **Forgetting** | No mechanism (concepts accumulate) | Catastrophic forgetting (studied) |
-| **Memory capacity** | ~10K hash entries | ~1.8T parameters |
+**Critical insight:** Embeddings are byte-level deterministic encodings, NOT learned.  
+`"France?"` and `"Germany?"` will have different first-5 bytes resulting in different vectors.  
+`"France"` and `"France?"` will differ in the 7th position. There is NO semantic similarity encoded.
 
-### 14.5 Tool Use Comparison
+### Stage 5: Core Processing (The "Neural" Path)
+```rust
+// loom.rs line 1858
+for iteration in 0..adaptive_max {  // adaptive_max ~2-20 based on entropy
+    process_cores_parallel(&mut pulses);  // ALL cores transform pulses in parallel
+    field.update(&mut pulses);            // Field diffuses info to pulses
+    
+    // Check convergence
+    avg_entropy < convergence_threshold? (0.3) → break
+    entropy_delta < 0.001? → break
+    content_convergence > 0.85? → break
+}
+```
 
-| Aspect | Nova Core | ChatGPT + Plugins | Claude + Tools |
-|--------|-----------|-------------------|----------------|
-| **Autonomous tool selection** | ❌ Manual only | ✅ Automatic | ✅ Automatic |
-| **Tool chaining** | ❌ None | ✅ Yes | ✅ Yes |
-| **Web search** | ❌ Placeholder | ✅ Yes (Bing) | ✅ Yes |
-| **Code execution** | ❌ Placeholder | ✅ Yes (Code Interpreter) | ✅ Yes |
-| **File operations** | ✅ Basic | ✅ Yes | ✅ Yes |
-| **Error recovery** | ❌ None | ✅ Yes | ✅ Yes |
-| **Safety sandbox** | ⚠️ Basic (path validation, whitelist) | ✅ Advanced | ✅ Advanced |
+#### `process_cores_parallel()` calls EACH core's `process()` in parallel:
 
-### 14.6 Coding Comparison
+**Core 0 — Syntax** (256 memory):
+```rust
+fn syntax_transform(pulses, step) {
+    // Applies tanh to all pulse content
+    // Reduces entropy by factor 0.97 each step
+    for x in pulse.content { *x = x.tanh() * factor; }
+}
+```
 
-| Aspect | Nova Core | Modern LLMs |
-|--------|-----------|-------------|
-| **Code understanding** | String matching (contains "fn ") | AST-level semantic understanding |
-| **Code generation** | Template filling (hello, fibonacci, sort) | Novel code synthesis from description |
-| **Debugging** | Rule-based linting (unwrap, unsafe, TODO) | Execution-based debugging with fix suggestions |
-| **Languages supported** | Rust, Python, JavaScript | 50+ languages |
-| **Context-aware generation** | ❌ No context | ✅ Full project context |
-| **Test generation** | ❌ None | ✅ Yes |
+**Core 1 — Semantic** (256 memory):
+```rust
+fn semantic_transform(pulses, step) {
+    // Amplifies values above 0.3 by 1.12x
+    // Attenuates values below 0.3 by 0.95x
+    // After step 2, reduces entropy by 0.85
+}
+```
 
-### 14.7 Speed & GPU Utilization Comparison
+**Core 2 — Memory** (512 memory):
+```rust
+fn memory_transform(pulses, step) {
+    // Writes first dim of pulse content into memory array
+    // Blends memory back into pulse content[0]
+    // After 8 steps, does a slow blend back
+    // THIS ONLY OPERATES ON content[0] — ignores 63 other dimensions
+}
+```
 
-| Aspect | Nova Core | Modern LLMs |
-|--------|-----------|-------------|
-| **Inference speed** | O(n) theoretical (field dynamics) | O(n²) with KV cache optimizations |
-| **GPU kernels** | 8 custom CUDA kernels | Thousands of optimized kernels (FlashAttention, etc.) |
-| **GPU utilization** | Optional, basic kernels | Essential, heavily optimized |
-| **Quantization** | ❌ None | ✅ INT8/FP8/INT4 |
-| **Speculative decoding** | ❌ None | ✅ Standard |
-| **KV cache optimization** | ❌ None (no KV cache) | ✅ PagedAttention, vLLM, etc. |
-| **Continuous batching** | ❌ None | ✅ Standard |
+**Core 3 — Reasoning** (256 memory):
+```rust
+// PRIORITY 1: reasoning_transform_v2()
+// Phase 1: Contradiction detection — if pulses have similarity < -0.3, attenuate both
+// Phase 2: Implication propagation — strong pulses influence similar weak ones  
+// Phase 3: Evidence accumulation — average all confident pulse directions
+//
+// FALLBACK (high entropy): differences between adjacent pulse[0] values
+```
 
-### 14.8 Inference Pipeline Comparison
+**Core 4 — Pattern** (128 memory):
+```rust
+fn pattern_transform(pulses, step) {
+    // Detects repeating patterns at distance 3
+    // If similarity > 0.7, boosts weights
+}
+```
 
-| Aspect | Nova Core | Modern LLMs |
-|--------|-----------|-------------|
-| **Tokenization** | Whitespace split + byte encoding | BPE/WordPiece/SentencePiece (30K-200K vocab) |
-| **Embedding** | Deterministic byte-to-float | Learned embedding table |
-| **Forward pass** | Field dynamics + SSM + core transforms | Transformer blocks (attention + FFN) |
-| **Output decoding** | Cosine similarity → hardcoded word list | Softmax over vocabulary → sampling |
-| **Sampling strategies** | None (deterministic) | Temperature, top-k, top-p, beam search |
-| **Streaming** | ❌ None | ✅ Token-by-token |
-| **Structured output** | ❌ None | ✅ JSON mode, grammar constraints |
+Then each core applies **SSM Transform** (Mamba selective scan on pulse content).
 
-### 14.9 What Nova Core Is Currently Missing Compared to Modern LLMs
+### Stage 6: Field Update
+```rust
+// field.rs line 92
+fn update(pulses) {
+    // 1. Compute weighted average of ALL pulse content (O(n))
+    // 2. Update field state with momentum: state += momentum * 0.9 + diff * lr
+    // 3. Diffuse field state back to pulses: pulse = pulse * (1-diff) + state * diff
+    // Reduces all pulse entropy by 0.98
+}
+```
 
-| Missing Capability | Impact | How Modern LLMs Do It |
-|-------------------|--------|----------------------|
-| **Gradient-based learning** | Nova cannot learn from data. All "learning" is memorization. | Backpropagation through transformer layers with cross-entropy loss |
-| **Tokenization** | Nova cannot process subword units. Limited to whitespace-split words. | BPE/WordPiece/SentencePiece with 30K-200K vocabulary |
-| **Learned embeddings** | Nova's word representations have no semantic structure. | Learned embedding tables with gradient updates |
-| **Attention mechanism** | Nova has no pairwise interaction between tokens. | Multi-head self-attention (or linear approximations) |
-| **Feed-forward networks** | Nova has no learned non-linear transformations. | MLP/FFN layers with millions of parameters |
-| **Layer normalization** | Nova has no normalization layers. | RMSNorm/LayerNorm for training stability |
-| **Residual connections** | Nova has no skip connections. | Residual connections for gradient flow |
-| **Automatic differentiation** | Nova cannot compute gradients. | Tape-based autograd or symbolic differentiation |
-| **Optimizer integration** | NovaOptimizer exists but is disconnected. | AdamW integrated into training loop |
-| **Large-scale training** | Nova trains on tiny synthetic datasets. | Trillions of tokens across thousands of GPUs |
-| **Quantization** | Nova uses full FP32 everywhere. | INT8/FP8 for 2-4x speedup |
-| **KV cache** | Nova has no KV cache (no attention). | KV cache for O(1) per-token generation |
-| **FlashAttention** | Nova doesn't need it (no attention). | 2-4x attention speedup |
-| **Speculative decoding** | Nova generates one word at a time. | 2-3x generation speedup |
-| **Continuous batching** | Nova processes one request at a time. | 10-100x throughput improvement |
-| **Streaming** | Nova returns complete response. | Token-by-token streaming for interactivity |
-| **Sampling** | Nova always picks the best match. | Temperature, top-k, top-p for diversity |
-| **RAG integration** | KnowledgeStore is not integrated. | Retrieval-Augmented Generation |
-| **RLHF/DPO** | Nova has no alignment training. | Reinforcement Learning from Human Feedback |
-| **Safety filtering** | Nova has no content moderation. | Input/output filtering, refusal training |
-| **Multi-turn conversation** | Nova treats each input independently. | Conversation history in context window |
-| **System prompts** | Nova has no system prompt mechanism. | System prompts for behavior control |
-| **Function calling** | Nova cannot call functions autonomously. | Structured function calling API |
-| **JSON mode** | Nova cannot produce structured output. | Constrained decoding for JSON |
+### Stage 7: Multi-Core Semantic Consensus
+```rust
+fn apply_multi_core_semantic_consensus(pulses) {
+    // Average all cores' internal_state weighted by gate
+    // Blend 20% of this average into the LAST pulse
+}
+```
 
----
+### Stage 8: map_pulses_to_vocab() — Output Generation
+```rust
+fn map_pulses_to_vocab(pulses) {
+    // For each pulse:
+    //   1. Compute cosine similarity against ALL vocabulary entries
+    //   2. Pick the word with highest cosine similarity
+    //   3. If best similarity < 0.1, pick RANDOM word from all_words
+    //   4. Return joined string
+}
+```
 
-## 15. CRITICAL ARCHITECTURAL WEAKNESSES
-
-### 15.1 Scalability Limitations
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **No gradient-based learning** | Training pipeline uses hash memorization instead of backpropagation. `train_batch()` stores `input_hash → target` in HashMap rather than computing gradients. | Model cannot scale to large datasets. Performance degrades with more data (more hash collisions). No generalization. | Implement automatic differentiation through SSM, field dynamics, and core transforms. Connect NovaOptimizer (AdamW) to training loop. | VERY HIGH — requires fundamental rearchitecture of the training pipeline |
-| **O(n²) transforms** | `reasoning_transform` and `pattern_transform` in `core.rs:171-196` iterate over all pulse pairs. | With 10K+ pulses (e.g., processing a book), these transforms become the bottleneck. | Replace pairwise operations with O(n) alternatives: use field state as global context instead of pairwise differences. | MEDIUM — algorithmic change only |
-| **No parameter scaling** | All parameters are hardcoded constants (0.85, 0.15, 0.25, 0.3, 0.7, etc.). No learned scaling with model size. | Doubling the number of cores or dimension does not improve capability proportionally. | Make all transform coefficients learnable parameters. Implement learned gating per transform per core. | HIGH — requires gradient-based learning first |
-| **Flat memory layout** | SSM uses `Vec<f32>` with `d_inner × d_state` flat layout. No hierarchical or sparse memory. | Memory footprint grows as O(d_inner × d_state). Cannot scale to large state dimensions. | Implement hierarchical SSM with multiple resolution levels. Add sparse activation patterns. | HIGH — significant SSM rearchitecture |
-
-### 15.2 Catastrophic Forgetting
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **No consolidation mechanism** | New training examples simply overwrite or add to `learned_responses` HashMap. No mechanism to integrate new knowledge with existing knowledge. | Training on new data causes the model to "forget" old responses if hash collisions occur. No way to update knowledge without retraining. | Implement experience replay buffer. Add elastic weight consolidation (EWC) or similar continual learning method. | HIGH — requires gradient-based learning first |
-| **KnowledgeStore has no forgetting** | Concepts accumulate in `HashMap<String, Concept>` without bound. No eviction or consolidation. | Memory grows linearly with training data. Old, irrelevant concepts waste space and slow retrieval. | Implement LRU eviction, importance-based pruning, or consolidation into higher-level concepts. | MEDIUM — algorithmic change |
-| **N-gram patterns are additive** | `learn_ngrams()` only adds patterns, never removes or updates them. | Outdated patterns persist forever. Model cannot adapt to distribution shifts. | Implement n-gram decay (exponential moving average of confidence scores). Add periodic pruning of low-confidence patterns. | LOW — simple algorithmic change |
-
-### 15.3 Reasoning Limitations
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **"Reasoning" is pairwise diffusion** | `reasoning_transform` computes `content[i] += (content[i] - content[i-1]) * 0.25`. This is numerical diffusion, not logical reasoning. | Model cannot perform any form of logical inference, causal reasoning, or multi-step deduction. | Replace with actual reasoning mechanism: implement chain-of-thought via iterative pulse refinement, or integrate a symbolic reasoning engine. | VERY HIGH — requires fundamental rearchitecture |
-| **No logical inference engine** | MathEngine's `deduce()` only supports 3 inference rules (modus ponens, modus tollens, syllogism). Not integrated into inference. | Model cannot reason about logical relationships in its knowledge. | Integrate a proper logical inference engine (e.g., Prolog-like resolution) into the inference pipeline. | HIGH — significant new module |
-| **No causal reasoning** | No mechanism to model cause-effect relationships. All transforms are purely numerical. | Model cannot answer "why" questions or predict consequences of actions. | Implement causal graph learning from data. Add counterfactual reasoning module. | VERY HIGH — requires gradient-based learning first |
-
-### 15.4 Memory Bottlenecks
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **Hash-based memory is O(1) but zero-generalization** | `learned_responses: HashMap<u64, String>` stores exact input→output mappings. Any input variation produces a different hash. | Model can only respond to inputs it has seen exactly before. Novel inputs fall through to n-gram or random fallback. | Replace with parametric memory (neural network weights) that generalizes across similar inputs. | VERY HIGH — requires gradient-based learning |
-| **Core memory is tiny** | Each core has `memory: Vec<f32>` with size 128-512. Total memory across 5 cores is 640-2,560 floats. | Model cannot store complex information. Memory is quickly overwritten. | Increase memory capacity. Implement hierarchical memory with different timescales (working, short-term, long-term). | MEDIUM — structural change |
-| **Field state is the only shared memory** | All information sharing between cores happens through the field state vector. | Information bottleneck: all cross-core communication must pass through a single vector. | Implement multiple specialized field channels (e.g., syntax field, semantic field, reasoning field). Add cross-attention between fields. | HIGH — significant rearchitecture |
-
-### 15.5 CUDA Limitations
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **Only 8 kernels** | `kernels/ssm.cu` has 8 kernels covering basic operations. Many operations still run on CPU. | GPU is underutilized. Most computation happens on CPU even when GPU is available. | Implement kernels for all core transforms, field operations, and vocabulary matching. | MEDIUM — incremental kernel development |
-| **No kernel fusion** | Each operation is a separate kernel launch. No fused kernels for combined operations. | High kernel launch overhead. Memory bandwidth is wasted on intermediate results. | Fuse frequently co-occurring operations (e.g., SSM + field update, or multiple transforms). | MEDIUM — requires CUDA expertise |
-| **No occupancy optimization** | Grid/block dimensions are hardcoded. No dynamic adjustment based on GPU capabilities. | Suboptimal GPU utilization. May leave compute units idle. | Implement occupancy calculator. Dynamically adjust grid/block sizes based on input size and GPU properties. | LOW — well-understood optimization |
-| **No tensor core support** | All kernels use FP32 arithmetic. No use of tensor cores for matrix multiply. | 4-8x slower than theoretically possible on modern GPUs. | Implement tensor core kernels for SSM matrix operations. Use FP16/BF16 where possible. | MEDIUM — requires CUDA expertise |
-| **No multi-GPU support** | All GPU operations target a single device. | Cannot scale to larger models or datasets. | Implement model parallelism across multiple GPUs. Distribute cores across devices. | HIGH — significant infrastructure work |
-
-### 15.6 Serialization Issues
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **No version compatibility** | `load_model()` in `model.rs` deserializes without checking version. | Loading a model saved by a different code version may fail silently or produce incorrect results. | Add version field to ModelConfig. Implement migration functions for breaking changes. | LOW — straightforward fix |
-| **No incremental saving** | `save_model()` serializes the entire model state at once. | Saving large models is slow and memory-intensive. No checkpointing during training. | Implement incremental save (only changed parameters). Add periodic checkpointing during training. | MEDIUM — requires careful design |
-| **No compression** | Model files are uncompressed JSON. | Model files are large and slow to load/save. | Use binary serialization (e.g., bincode, msgpack). Add optional compression (gzip, zstd). | LOW — straightforward fix |
-| **chrono_now() is approximate** | `model.rs` calculates date by adding days from a base date. | Model timestamps are inaccurate. | Use the `chrono` crate for accurate date/time. | LOW — simple dependency addition |
-
-### 15.7 Training Limitations
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **No gradient computation** | `train_batch()` uses heuristic update rules instead of gradient descent. | Model cannot optimize its parameters toward a loss function. No learning occurs. | Implement automatic differentiation. Connect NovaOptimizer to training loop. | VERY HIGH — fundamental rearchitecture |
-| **SSM parameters frozen** | `train_batch()` and `train_neural()` never modify `ssm.a_log`, `ssm.b`, `ssm.c`, `ssm.delta`, etc. | The core neural computation (selective scan) uses random, untrained parameters. | Add gradient computation for SSM parameters. Update them via AdamW during training. | VERY HIGH — requires gradient-based learning |
-| **Vocabulary not learned** | `init_vocabulary()` creates deterministic embeddings from word hash. | Word representations have no semantic structure. "cat" and "dog" are as different as "cat" and "quantum". | Replace with learned embedding table. Initialize randomly and update via gradient descent. | HIGH — requires gradient-based learning |
-| **NovaOptimizer disconnected** | `optimizer.rs` implements correct AdamW but is never called from `trainer.rs`. | The only optimizer implementation in the codebase is completely unused. | Integrate NovaOptimizer into the training loop. Register all learnable parameters. | MEDIUM — integration work |
-| **train_one_pass() and train_one_pass_ultra() are identical** | Code duplication in `trainer.rs:869-969` and `trainer.rs:974-1062`. | Maintenance burden. Bug fixes must be applied twice. | Remove the duplicate. Keep one implementation with a parameter for verbosity. | LOW — simple refactoring |
-
-### 15.8 Inference Limitations
-
-| Weakness | Root Cause | Impact | Recommended Fix | Implementation Difficulty |
-|----------|-----------|--------|-----------------|--------------------------|
-| **Hash lookup is primary inference** | `process()` checks `learned_responses` before running neural path. | Model cannot handle novel inputs. Every new input requires training first. | Make neural path the primary inference mechanism. Use hash lookup only as a cache. | VERY HIGH — requires gradient-based learning |
-| **No generalization** | All learned information is stored as exact hash mappings. | Model performance on test data is near zero for any input not in training set. | Implement parametric learning (neural network weights) that generalizes. | VERY HIGH — fundamental rearchitecture
+### Stage 9: Return Output
+```
+"What is the capital of France?"
+    ──► neural path runs 5-15 iterations
+    ──► pulses transformed by 5 cores + field
+    ──► cosine similarity picks closest vocabulary words
+    ──► OUTPUT: "the capital the of the france" (garbage)
+```
 
 ---
 
-## 16. FINAL READINESS SCORE
+## PHASE 3 — TRAINING PIPELINE
 
-### 16.1 Category Scores
+### 3.1 Training Architecture
 
-Each category is scored from 1 (non-functional) to 10 (production-ready, competitive with modern LLMs). Scores are based on **actual source code verification**, not intended design.
+Nova has **THREE training modes**, only one of which has any resemblance to actual training:
 
-| Category | Score | Justification |
-|----------|-------|---------------|
-| **Training** | 1/10 | Hash-based memorization (`HashMap<u64, String>`). No gradient descent. SSM parameters never updated. NovaOptimizer (AdamW) exists but is disconnected. Vocabulary embeddings are deterministic byte mappings. |
-| **Inference** | 2/10 | Primary mechanism is exact hash lookup. Falls through to n-gram prediction (statistical) or random word generation from 150 hardcoded words. Neural path runs but its output is only used as last resort. |
-| **Reasoning** | 0/10 | "Reasoning" transforms are pairwise diffusion (`content[i] += (content[i] - content[i-1]) * 0.25`) and cosine similarity amplification. No logical inference, causal reasoning, chain-of-thought, or multi-step deduction. |
-| **Coding** | 1/10 | String matching for "analysis" (`code.contains("fn ")`). Template filling for "generation" (hello, fibonacci, sort). Rule-based linting for "debugging" (unwrap, unsafe, TODO). No AST parsing, no semantic understanding, no novel code synthesis. |
-| **Mathematics** | 2/10 | Basic arithmetic, linear/quadratic equation solving, propositional logic (3 rules), number theory (trial division), descriptive statistics. No calculus, no linear algebra, no numerical methods. MathEngine is a standalone utility, not integrated into inference. |
-| **Tool Use** | 1/10 | File read/write (basic), HTTP (feature-gated), calculator (duplicate of MathEngine). Web search and code execution are placeholders returning "not implemented". Not integrated into inference — manual invocation only. |
-| **CUDA/GPU** | 4/10 | 8 CUDA kernels exist with proper GPU abstraction and CPU fallback. No kernel fusion, no occupancy optimization, no tensor core support, no multi-GPU. GPU is optional and underutilized. |
-| **GPU Utilization** | 3/10 | Most computation runs on CPU even when GPU is available. No continuous batching, no speculative decoding, no quantization. Profiling always enabled (adds overhead). |
-| **Memory** | 2/10 | Hash-based memory (exact match only, zero generalization). Core memory is tiny (640-2,560 floats per core). Field state is the only shared memory (information bottleneck). LongContextManager exists but is dead code. |
-| **Long Context** | 0/10 | LongContextManager (`src/context.rs`) is structurally complete but never instantiated or called. Context is limited to current input only. No sliding window, no hierarchical fields, no context compression in the inference path. |
-| **Performance** | 3/10 | O(n) theoretical complexity for field dynamics. But O(n²) transforms exist (reasoning, pattern). No streaming, no batching, no KV cache (no attention). Benchmark suite exists but evaluators use string matching and comparison stubs return 0.5. |
-| **Benchmark Readiness** | 2/10 | Benchmark tasks exist but evaluators use `answer.contains(expected)` (string matching). `compare_with_llama()` always returns 0.5. `auto_improve()` and `fine_tune()` are placeholders. No standardized benchmarks (MMLU, GSM8K, HumanEval, etc.). |
+| Mode | File | Method | Real Learning? |
+|---|---|---|---|
+| `train()` | trainer.rs:527 | Epoch-based, hash + n-gram | NO (memorization) |
+| `train_neural()` | trainer.rs:578 | Finite-difference gradients + AdamW | PARTIAL |
+| `train_one_pass()` | trainer.rs:876 | Hash associations only | NO |
+| `train_one_pass_ultra()` | trainer.rs:984 | Hash associations, no cores | NO |
 
-### 16.2 Overall Score
+### 3.2 Dataset Loading
 
-| Metric | Score |
-|--------|-------|
-| **Average Score** | **1.75/10** |
-| **Median Score** | **1.5/10** |
-| **Highest Score** | 4/10 (CUDA/GPU) |
-| **Lowest Score** | 0/10 (Reasoning, Long Context) |
+```
+Dataset file (CSV/JSON/JSONL/TXT/HF)
+    │
+    ▼
+NovaDataset::load_all()
+    │   - Auto-detect columns (input/target patterns)
+    │   - Parse rows into Vec<TrainingExample { input, target }>
+    │
+    ▼
+train_val_split(0.1) → (train_data, val_data)
+```
 
-### 16.3 Can Nova Compete with Modern LLMs?
+### 3.3 Vocabulary Creation
 
-| Model | Can Nova Compete? | Explanation |
-|-------|-------------------|-------------|
-| **ChatGPT (GPT-4)** | ❌ No | Nova lacks gradient-based learning, tokenization, attention, FFN layers, RLHF, multi-turn conversation, streaming, and all reasoning capabilities. GPT-4 has ~1.8T parameters trained on internet-scale data. Nova has ~10K hardcoded parameters trained on tiny synthetic examples. |
-| **DeepSeek-V3** | ❌ No | DeepSeek has 671B parameters (37B active), MoE architecture, 128K context, strong math reasoning, and was trained on 2.788M H800 GPU-hours. Nova has none of these. DeepSeek's math capabilities alone exceed Nova's entire system. |
-| **Qwen 2.5 (72B)** | ❌ No | Qwen has 72B parameters, 128K context, strong multilingual support, and comprehensive tool use. Nova's 10K hardcoded parameters and hash-based "learning" cannot compete with any dimension of Qwen's capabilities. |
-| **Llama 3 (405B)** | ❌ No | Llama 3 has 405B parameters, 128K context, strong reasoning, and was trained on 15T+ tokens. Nova's architecture is novel but the implementation is not functional as a neural network. Llama 3's weakest variant (8B) outperforms Nova in every measurable category. |
-| **Gemma 2 (7B)** | ❌ No | Even the smallest modern LLM (Gemma 2 7B) has 7B learned parameters, proper gradient-based training, and functional reasoning. Nova's architecture is interesting but the implementation is not competitive. |
-| **Mistral (7B)** | ❌ No | Mistral 7B outperforms Nova in every category: training, inference, reasoning, coding, math, tool use, context handling, and speed. Nova's O(n) complexity advantage is theoretical — in practice, Mistral's optimized inference is faster. |
+```rust
+fn init_vocabulary(examples) {
+    // Collect ALL unique words from inputs AND targets
+    // For each word, create a DETERMINISTIC RANDOM embedding:
+    let seed = word.bytes().fold(0u64, |acc, b| acc * 31 + b);
+    let mut rng = StdRng::from_seed(seed_bytes);
+    for _ in 0..dim { vec.push(rng.gen_range(-0.3..0.3)); }
+    normalize(vec);  // Unit vector
+}
+```
 
-### 16.4 What Must Be Implemented for Nova to Be Competitive
+**Critical:** Vocabulary embeddings are:
+- **Deterministic** (same word → same embedding always)
+- **Random** (no semantic structure — "cat" and "dog" are as similar as "cat" and "quantum")
+- **Fixed** (never updated during training)
+- **NOT learned** (no gradient flows into vocabulary)
+- **Hash-based** (the "learning" is memorizing which hash → which word)
 
-| Priority | Required Implementation | Estimated Effort | Impact if Done |
-|----------|------------------------|-----------------|----------------|
-| **P0** | Gradient-based learning (backpropagation through SSM, field dynamics, core transforms) | VERY HIGH (months) | Transforms Nova from memorization to actual learning |
-| **P0** | Connect NovaOptimizer (AdamW) to training loop with proper parameter registration | HIGH (weeks) | Enables actual parameter optimization |
-| **P0** | Learnable SSM parameters (A, B, C, Δ, D) updated via gradient descent | HIGH (weeks) | Makes the core neural computation trainable |
-| **P0** | Learnable vocabulary embeddings (replace deterministic byte mapping) | HIGH (weeks) | Enables semantic word representations |
-| **P1** | Tokenization (BPE/WordPiece/SentencePiece) | MEDIUM (weeks) | Enables subword processing and larger vocabulary |
-| **P1** | Feed-forward network layers between SSM and field dynamics | HIGH (weeks) | Adds learned non-linear transformations |
-| **P1** | Layer normalization for training stability | MEDIUM (days) | Enables deeper architectures |
-| **P1** | Residual connections for gradient flow | MEDIUM (days) | Enables deeper architectures |
-| **P1** | Integrate LongContextManager into inference pipeline | MEDIUM (weeks) | Enables long document processing |
-| **P1** | Integrate KnowledgeStore as first-class inference component | MEDIUM (weeks) | Enables knowledge-augmented generation |
-| **P2** | Replace O(n²) transforms with O(n) alternatives | MEDIUM (weeks) | Maintains theoretical O(n) advantage |
-| **P2** | Implement proper token sampling (temperature, top-k, top-p) | LOW (days) | Enables diverse generation |
-| **P2** | Implement streaming inference | MEDIUM (weeks) | Enables interactive use |
-| **P2** | Add multi-turn conversation support | MEDIUM (weeks) | Enables dialogue |
-| **P3** | CUDA kernel fusion and occupancy optimization | MEDIUM (weeks) | Improves GPU utilization |
-| **P3** | Quantization (FP16/INT8) | HIGH (weeks) | Improves speed and memory |
-| **P3** | Integrate Coding/Math/Tools into inference pipeline | MEDIUM (weeks) | Enables autonomous capability use |
-| **P4** | Multi-GPU support | VERY HIGH (months) | Enables scaling |
-| **P4** | RLHF/DPO for alignment | VERY HIGH (months) | Improves output quality |
-| **P4** | Standardized benchmarks (MMLU, GSM8K, HumanEval) | MEDIUM (weeks) | Enables objective comparison |
+### 3.4 Neural Training (train_neural)
 
-### 16.5 Honest Assessment
+```
+1. FORWARD PASS (COSTLY):
+   - text_to_pulses(input)         → Vec<NovaPulse>
+   - process_cores_parallel()      → ALL cores transform pulses
+   - field.update()                → Field dynamics
+   - [repeat until convergence or max_iter]
+   
+2. LOSS COMPUTATION:
+   - For each target word, look up its embedding in vocab_forward
+   - Compute MSE between pulse[i].content and target_word_embedding
+   - Average MSE = loss
+   
+3. GRADIENT COMPUTATION (THE WEAKNESS):
+   - Uses FINITE DIFFERENCES (NOT backpropagation):
+   
+   for each parameter p:
+       original = p
+       p += epsilon                    # eps = 0.001
+       loss_up = compute_loss(model)   # FULL forward pass again!
+       p = original - epsilon
+       loss_down = compute_loss(model) # ANOTHER full forward pass!
+       grad = (loss_up - loss_down) / (2 * epsilon)
+       p = original
+   
+   SCALE: 2 forward passes per parameter
+   Parameters: core_memory (256×5), internal_state (64×5), gate (5), 
+               SSM params (64×16×3 per core)
+   ≈ 15,700 parameters × 2 = 31,400 forward passes per example!
+   
+4. ADAMW UPDATE:
+   - Accumulate gradients in GradientBuffer
+   - Clip by global norm (threshold: 1.0)
+   - Apply AdamW: m = β₁·m + (1-β₁)·g
+                   v = β₂·v + (1-β₂)·g²
+                   θ = θ - lr·(m/(√v+ε) + wd·θ)
+```
 
-**Nova Core, in its current state, cannot compete with any modern LLM.** The architecture is genuinely novel and theoretically interesting, but the implementation has fundamental flaws that prevent it from functioning as a neural network:
+### 3.5 Which Weights Learn vs. Don't
 
-1. **No learning**: The training pipeline does not use gradient descent. All "learning" is hash-based memorization.
-2. **No generalization**: The model can only respond to inputs it has seen exactly before.
-3. **No reasoning**: The "reasoning" transforms are simple mathematical operations, not logical inference.
-4. **No integration**: Critical modules (context, optimizer, knowledge, coding, math, tools) are disconnected from the inference pipeline.
-5. **No scale**: With ~10K hardcoded parameters, the model cannot represent complex functions.
+| Parameter | Learns? | How? | Notes |
+|---|---|---|---|
+| Core memory (Vec<f32>) | ✅ Finite-diff | 2 FP per param | Only first 64 of 256 dims |
+| Core internal_state | ✅ Finite-diff | 2 FP per param | Only first 16 of 64 dims |
+| Core gate (f32) | ✅ Finite-diff | 2 FP | Clamped to [0.1, 0.95] |
+| Field state (Vec<f32>) | ✅ Finite-diff | Included | Direct AdamW update |
+| Field momentum (Vec<f32>) | ✅ Finite-diff | Included | Direct AdamW update |
+| SSM A_log | ✅ Finite-diff | 2 FP per param | Only first 32 of 1024 |
+| SSM B | ✅ Finite-diff | 2 FP per param | Only first 32 of 1024 |
+| SSM C | ❌ | Not computed | C gradients NOT in finite-diff code |
+| SSM delta | ❌ | Not computed | D_biass not included |
+| SSM delta_bias | ❌ | Not computed | Not included |
+| Vocabulary | ❌ NEVER | N/A | Hash-based random, FIXED |
+| learned_responses | ✅ Direct store | hash→string | This is actually memorization |
+| ngram_patterns | ✅ Direct store | count frequency | This is n-gram statistics |
 
-**The path to competitiveness requires a fundamental rearchitecture of the training pipeline** — specifically, implementing gradient-based learning through the SSM, field dynamics, and core transforms. This is a months-long engineering effort, not a quick fix.
+### 3.6 Where Gradients Flow
 
-**However, the architecture itself is worth pursuing.** The field dynamics + SSM + pulse-based approach could be a legitimate alternative to transformer self-attention for certain use cases (long sequences, low-latency applications). If gradient-based learning is properly implemented, Nova Core could evolve into a competitive architecture for specific niches.
+```
+Gradient PATH (finite-difference):
+    perturb parameter p
+    ▼
+    text_to_pulses(input) ─► Vec<NovaPulse>
+    ▼
+    process_cores_parallel() ─► modifies pulse content
+    ▼
+    field.update() ─► modifies pulse content
+    ▼
+    MSE(pulse.content, target_embedding) ─► loss (scalar)
+    ▼
+    (loss_up - loss_down) / 2ε ─► gradient estimate for p
+    ▼
+    AdamW update on p
+```
 
----
+### 3.7 Where Gradients STOP
 
-## 17. CURRENT PROBLEMS
+```
+Gradients STOP at:
+1. Vocabulary embeddings — NEVER computed, NEVER updated
+2. Text_to_pulses encoding — deterministic byte mapping, no parameters
+3. SSM C, delta, delta_bias — omitted from finite-diff computation
+4. Core memory beyond index 64 — truncated in finite-diff loop
+5. Internal_state beyond index 16 — truncated in finite-diff loop
+6. SSM parameters beyond index 32 — truncated
+```
 
-### 17.1 Critical Problems (Blocking Production Use)
+### 3.8 Does Semantic Learning Actually Occur?
 
-| # | Problem | Severity | Location | Description |
-|---|---------|----------|----------|-------------|
-| 1 | **No gradient-based learning** | CRITICAL | trainer.rs | Training is hash-based memorization, not gradient descent. SSM parameters are never updated. |
-| 2 | **Optimizer disconnected** | CRITICAL | optimizer.rs → trainer.rs | NovaOptimizer (AdamW) is fully implemented but never called from the training pipeline. |
-| 3 | **SSM parameters frozen** | CRITICAL | ssm.rs, trainer.rs | A, B, C, delta, delta_bias, D are initialized once and never updated during training. |
-| 4 | **Vocabulary not learned** | CRITICAL | trainer.rs | Word embeddings are deterministic byte-to-float mappings with no semantic structure. |
-| 5 | **No generalization** | CRITICAL | loom.rs | Inference relies on exact hash match. Novel inputs produce random or n-gram output. |
+**No.** Here's why:
 
-### 17.2 Major Problems (Blocking Effective Use)
+1. **Finite difference is computationally intractable** for anything beyond toy scale. For 15,700 parameters × 2 forward passes each = 31,400 forward passes per example. At 0.1ms per forward pass, that's ~3 seconds per example. With batch_size=16, that's 48 seconds per batch. With accumulation_steps=4, that's 192 seconds per optimizer step.
 
-| # | Problem | Severity | Location | Description |
-|---|---------|----------|----------|-------------|
-| 6 | **Dead modules** | HIGH | context.rs, optimizer.rs | LongContextManager and NovaOptimizer are structurally complete but never called. |
-| 7 | **Standalone utilities** | HIGH | coding.rs, math.rs, tools.rs | CodingEngine, MathEngine, ToolEngine are not integrated into inference. |
-| 8 | **Hardcoded fallback vocabulary** | HIGH | loom.rs | 150 hardcoded words used when cosine similarity fails. |
-| 9 | **O(n²) transforms** | HIGH | core.rs | reasoning_transform and pattern_transform are O(n²) in number of pulses. |
-| 10 | **No long context** | HIGH | loom.rs | LongContextManager exists but is not integrated. Context is limited to current input. |
+2. **Gradient estimates are extremely noisy** — finite difference with ε=0.001 in a high-dimensional space with nonlinearities (tanh, sigmoid, softplus) produces gradients with near-zero signal-to-noise ratio.
 
-### 17.3 Moderate Problems
+3. **Vocabulary is fixed** — even if the model "learns" to produce better pulse vectors, the mapping from pulses to words is cosine similarity against random vectors. The words "France" and "paris" are no more similar than "France" and "the".
 
-| # | Problem | Severity | Location | Description |
-|---|---------|----------|----------|-------------|
-| 11 | **Code duplication** | MODERATE | trainer.rs | train_one_pass() and train_one_pass_ultra() are identical. |
-| 12 | **Calculator duplication** | MODERATE | tools.rs, math.rs | Both ToolEngine and MathEngine implement expression evaluation. |
-| 13 | **Placeholder comparisons** | MODERATE | benchmark/compare.rs | compare_with_llama() always returns 0.5. |
-| 14 | **Placeholder improvements** | MODERATE | benchmark/improve.rs | auto_improve() and fine_tune() are placeholders. |
-| 15 | **No buffer cache eviction** | MODERATE | cuda.rs | GPU buffer cache grows without bound. |
-| 16 | **Profiling always enabled** | MODERATE | cuda.rs | Profiling adds overhead even when not needed. |
-| 17 | **chrono_now() approximation** | MODERATE | model.rs | Date calculation is approximate, not using chrono crate. |
-| 18 | **No version compatibility** | MODERATE | model.rs | Loading old model snapshots may fail silently. |
+4. **The ACTUAL learning mechanism** is `learned_responses[hash(input)] = output`. This is a hash table lookup, not semantic learning.
 
-### 17.4 Minor Problems
+### 3.9 "Training" = Hash-Based Memorization
 
-| # | Problem | Severity | Location | Description |
-|---|---------|----------|----------|-------------|
-| 19 | **SmartChat not smart** | MINOR | main.rs | SmartChat command is identical to Chat. |
-| 20 | **No CLI help text** | MINOR | main.rs | Many subcommands lack --help descriptions. |
-| 21 | **No graceful shutdown** | MINOR | main.rs | No signal handling for clean exit. |
-| 22 | **Parent field unused** | MINOR | pulse.rs | NovaPulse.parent is set but never used in inference. |
-| 23 | **learning_rate unused** | MINOR | field.rs | NovaField.learning_rate is stored but never used in update logic. |
-| 24 | **No HIP kernels** | MINOR | cuda.rs | HardwareBackend::Hip exists but no HIP kernels are implemented. |
-| 25 | **String-matching evaluation** | MINOR | benchmark/tasks.rs | All evaluators use answer.contains(expected). |
+All training modes ultimately do this:
+```rust
+// This is what actually makes Nova "learn"
+let input_hash = hash_text("what color is the sky");
+model.learned_responses.insert(input_hash, "blue");
+model.learned_inputs.insert(input_hash, "what color is the sky");
 
----
-
-## 18. STATISTICS
-
-### 18.1 Code Statistics
-
-| Metric | Value |
-|--------|-------|
-| Total Rust source files | 17 (src/) + 6 (benchmark/) |
-| Total CUDA kernel file | 1 (kernels/ssm.cu) |
-| Total Rust lines (src/) | ~9,500 |
-| Total CUDA lines | 358 |
-| Total build script lines | 67 |
-| Total project lines | ~10,000 |
-| Total functions | ~300 |
-| Total structs | ~55 |
-| Total enums | ~20 |
-| Total CLI subcommands | 14 |
-
-### 18.2 Module Size Distribution
-
-| Size Range | Modules |
-|------------|---------|
-| > 1,000 lines | cuda.rs (1,529), trainer.rs (1,139), main.rs (1,150), loom.rs (1,082), dataset.rs (1,022) |
-| 500-999 lines | math.rs (782), tools.rs (771), coding.rs (755), ssm.rs (619), optimizer.rs (613), model.rs (583), benchmark/ (531) |
-| 200-499 lines | knowledge.rs (448), context.rs (395), core.rs (357), field.rs (274) |
-| < 200 lines | pulse.rs (124) |
-
-### 18.3 Feature Gates
-
-| Feature | Dependencies | Modules Affected |
-|---------|--------------|------------------|
-| `cuda` | cudarc | cuda.rs, build.rs, kernels/ssm.cu |
-| `gpu` | (same as cuda) | (alias for cuda) |
-| `hip` | (none) | cuda.rs (enum variant only) |
-| `http` | ureq | tools.rs (HTTP functions) |
-
-### 18.4 Dependency Count
-
-| Dependency | Version | Usage |
-|------------|---------|-------|
-| clap | 4.x | CLI argument parsing |
-| colored | * | Terminal output coloring |
-| rand | * | Random number generation |
-| rayon | * | Parallel CPU processing |
-| serde | 1.x | Serialization/deserialization |
-| serde_json | 1.x | JSON handling |
-| anyhow | * | Error handling |
-| thiserror | * | Error derive macros |
-| regex-lite | * | Regular expressions |
-| once_cell | * | Lazy initialization |
-| cudarc (optional) | * | CUDA bindings |
-| ureq (optional) | * | HTTP client |
+// And this generates outputs:
+// loom.rs line 1738
+if let Some(response) = model.learned_responses.get(&input_hash) {
+    return response.clone();  // PURE MEMORIZATION
+}
+```
 
 ---
 
-## 19. GIT SUMMARY
+## PHASE 4 — INFERENCE PIPELINE
 
-### 19.1 Repository Status
+### 4.1 Which Modules Run (in order)
 
-- **Remote:** `origin: https://github.com/anupbth1/nova_core_pro_V1.git`
-- **Latest Commit:** `e9a08511e0e8c34bbb203bf267e11b42d0994654`
-- **Branch:** (not specified, assumed main/master)
+```
+NovaLoom::process(text)     [ALWAYS]
+├── hash_text(text)         [ALWAYS - fast]
+├── learned_responses check [ALWAYS - hash lookup]
+├── partial hash match      [ALWAYS - iterates all learned inputs]
+│
+├── is_tool_input()         [IF tool_enabled]
+│   └── handle_tool_request() [IF tool detected]
+├── is_math_input()         [IF math_enabled]
+│   └── solve_math_response() [IF math detected]
+├── is_code_input()         [IF coding_enabled]
+│   ├── debug_code_response() [IF debug detected]
+│   └── generate_code_response() [IF code gen detected]
+│
+├── text_to_pulses()        [ALWAYS - neural path]
+├── process_cores_parallel() [ALWAYS - all 5 cores]
+│   ├── syntax_transform    [ALWAYS]
+│   ├── semantic_transform  [ALWAYS] + semantic_refine [ALWAYS]
+│   ├── memory_transform    [ALWAYS]
+│   ├── reasoning_transform_v2 [ALWAYS]
+│   ├── pattern_transform   [ALWAYS]
+│   ├── ssm_transform (each core) [ALWAYS - unless use_ssm=false]
+│   ├── multi-core comm bus [ALWAYS - broadcast + blend]
+│   └── knowledge_transform [IF knowledge has concepts]
+├── field.update()          [ALWAYS]
+│   └── SSM-enhanced [IF use_ssm]
+├── apply_multi_core_semantic_consensus() [ALWAYS]
+├── map_pulses_to_vocab()   [IF vocabulary not empty]
+│   └── cosine similarity loop [ALWAYS - O(vocab_size × dim)]
+└── return String
+```
 
-### 19.2 Commit History Analysis
+### 4.2 Which Modules Are Skipped
 
-Based on the file structure and development phases, the commit history likely follows:
+- **CUDA kernels** — `is_kernels_ready()` returns `false` always. CPU fallback active.
+- **LongContextManager** — only triggers if `pulses.len() > 2048` (very long inputs)
+- **SlidingWindowSSM** — only for sequences exceeding max_seq_length
+- **Hash + n-gram fallbacks** — commented out in PRIORITY 1 rewrite
 
-1. **Initial commits**: Core architecture (pulse.rs, field.rs, core.rs, ssm.rs, loom.rs, main.rs)
-2. **Training phase**: trainer.rs, dataset.rs, model.rs
-3. **GPU phase**: cuda.rs, kernels/ssm.cu, build.rs
-4. **Knowledge phase**: knowledge.rs, context.rs
-5. **Capability phase**: coding.rs, math.rs, tools.rs, optimizer.rs
-6. **Benchmark phase**: benchmark/ directory
-7. **Bug fixes**: Shared memory aliasing, borrow checker issues, type errors
+### 4.3 Where Output Actually Comes From
 
-### 19.3 Missing Git Practices
+The output comes from **one of four paths**, checked in order:
 
-- No `.gitignore` for model files or build artifacts (though one exists)
-- No CI/CD configuration
-- No pre-commit hooks
-- No version tags
-- No branching strategy evident
-- No contribution guidelines
+**Path 1: Learned Response (hash match)** → Most reliable output
+```rust
+// line 1738
+if let Some(response) = learned_responses.get(&hash_text(text)) {
+    if is_valid_response(response) { return response; }
+}
+```
+_This is pure memorization. If trained on "what color is the sky" → "blue", this works._
 
----
+**Path 2: Partial Hash Match** → Somewhat reliable
+```rust
+// line 1745
+for (hash, response) in learned_responses {
+    if text.contains(input_text) || input_text.contains(text) {
+        return response;
+    }
+}
+```
 
-## 20. FUTURE ROADMAP
+**Path 3: Specialized Engine** → Deterministic but keyword-gated
+```rust
+// Tool, Math, or Code engine
+// Only triggers if specific keywords detected ("calculate", "fn ", etc.)
+```
 
-### 20.1 Immediate Priorities (Phase 8: Fix Training)
+**Path 4: Neural Path** → Usually garbage
+```rust
+// line 1900
+if !vocabulary.is_empty() {
+    let neural_text = map_pulses_to_vocab(&pulses);
+    // Cosine similarity against random word embeddings
+    // Returns "the capital the of france" style output
+}
+```
 
-1. **Implement gradient-based learning**: Replace hash memorization with actual backpropagation through the SSM and field dynamics
-2. **Connect optimizer to trainer**: Integrate NovaOptimizer (AdamW) into the training loop
-3. **Enable SSM parameter updates**: Compute gradients for A, B, C, delta, delta_bias, D and update them during training
-4. **Learn vocabulary embeddings**: Replace deterministic byte mappings with learned embeddings
-5. **Implement automatic differentiation**: Either via a simple tape-based autograd or by connecting to a framework
+### 4.4 How Words Are Selected
 
-### 20.2 Short-Term Goals (Phase 9: Integration)
+```
+Pulse content vectors ([-1, 1] floats)
+    │
+    ▼
+For each pulse, iterate ALL vocabulary entries (simplified):
+    best_word = "the"
+    best_sim = -1.0
+    for each (word, vec) in vocabulary:
+        sim = cosine_similarity(pulse.content, vec)
+        if sim > best_sim:
+            best_word = word
+    
+    if best_sim > 0.1:
+        output.push(best_word)       // Best cosine similarity match
+    else:
+        output.push(random_word)     // Pseudo-random from all_words
+```
 
-6. **Integrate LongContextManager**: Connect it to the inference pipeline for processing long sequences
-7. **Integrate KnowledgeStore**: Make knowledge augmentation a first-class part of inference, not just one transform
-8. **Integrate Coding/Math/Tools**: Allow the model to invoke these engines based on input
-9. **Remove dead code**: Either implement or remove optimizer.rs and context.rs from the inference path
-10. **Fix O(n²) transforms**: Optimize reasoning_transform and pattern_transform to O(n) or O(n log n)
+**This is nearest-neighbor search against random vectors.** It has no notion of semantic similarity because the vocabulary was created with random seeds.
 
-### 20.3 Medium-Term Goals (Phase 10: Production Readiness)
+### 4.5 Text Generation (`generate_text`)
 
-11. **Add comprehensive tests**: Unit tests, integration tests, regression tests
-12. **Add documentation**: API docs, architecture docs, user guide
-13. **Implement model versioning**: Compatibility checks for loading old models
-14. **Add streaming inference**: Process token-by-token for interactive use
-15. **Optimize CUDA kernels**: Occupancy optimization, kernel fusion, tensor core support
-16. **Add multi-GPU support**: Distribute cores across multiple GPUs
+For longer outputs in SmartChat mode:
 
-### 20.4 Long-Term Vision (Phase 11: Advanced Capabilities)
-
-17. **Implement true reasoning**: Replace pairwise-diff "reasoning" with actual logical inference
-18. **Implement learning-to-learn**: Meta-learning for few-shot adaptation
-19. **Add reinforcement learning**: RLHF or similar for alignment
-20. **Implement sparse computation**: Mixture of experts for scaling
-21. **Add multimodal support**: Vision, audio inputs
-22. **Implement continual learning**: Online learning without catastrophic forgetting
-
----
-
-## 21. FINAL VERDICT
-
-### 21.1 Summary Assessment
-
-Nova Core is a **promising architectural prototype** with a genuinely novel approach to neural computation. The field dynamics + SSM + pulse-based architecture is a creative alternative to transformer self-attention, and the O(n) complexity is theoretically attractive for long sequences.
-
-**However, Nova Core is not a functioning neural network.** The critical flaw is that:
-
-1. **Training does not use gradient descent** — it uses hash-based memorization
-2. **SSM parameters are never updated** — the core neural computation is frozen
-3. **Vocabulary is deterministic** — no learned representations
-4. **Multiple modules are disconnected** — context, optimizer, coding, math, tools are not integrated
-5. **"Reasoning" is a misnomer** — the reasoning transforms are simple mathematical operations
-
-### 21.2 What Nova Core Does Well
-
-- **Novel architecture**: Field dynamics are genuinely innovative
-- **Clean Rust code**: Well-structured, modular, idiomatic Rust
-- **CUDA acceleration**: Proper GPU abstraction with fallback
-- **Comprehensive CLI**: Multiple commands for different use cases
-- **Data loading**: Supports multiple formats including HuggingFace datasets
-- **Model persistence**: Full state serialization and HF Hub integration
-
-### 21.3 What Nova Core Does NOT Do
-
-- **Does NOT learn from data** in the neural network sense
-- **Does NOT generalize** beyond memorized examples
-- **Does NOT reason** logically or causally
-- **Does NOT understand code** (pattern matching only)
-- **Does NOT do mathematics** beyond basic arithmetic (MathEngine is standalone)
-- **Does NOT use tools** autonomously (ToolEngine is standalone)
-- **Does NOT handle long context** (LongContextManager is disconnected)
-- **Does NOT optimize parameters** (NovaOptimizer is disconnected)
-
-### 21.4 Rating by Category
-
-| Category | Score (1-10) | Explanation |
-|----------|--------------|-------------|
-| Architecture Novelty | 8 | Field dynamics + SSM + pulse is genuinely novel |
-| Code Quality | 7 | Well-structured Rust, clean abstractions |
-| Training Correctness | 1 | Hash memorization is not neural learning |
-| Inference Quality | 2 | Hash lookup + n-gram + random fallback |
-| GPU Utilization | 5 | Good abstraction but only 8 kernels |
-| Reasoning | 0 | No actual reasoning capability |
-| Knowledge | 3 | Knowledge graph exists but embeddings are meaningless |
-| Coding | 2 | Template filling, not code generation |
-| Mathematics | 4 | Basic operations, no calculus or linear algebra |
-| Tool Use | 2 | Placeholder web search and code execution |
-| Documentation | 3 | README only, no API docs |
-| Production Readiness | 1 | Prototype quality, not suitable for real use |
-| **Overall** | **3.2** | **Promising prototype with fundamental training flaws** |
-
-### 21.5 Final Statement
-
-**Nova Core is an impressive architectural experiment that demonstrates creative thinking about alternatives to transformer architectures. The field dynamics, pulse-based computation, and SSM integration represent a genuinely novel approach to neural computation.**
-
-**However, the project has a fundamental disconnect between its architecture and its learning algorithm.** The neural architecture (SSM, field dynamics, core transforms) is sophisticated, but the training algorithm (hash memorization) cannot optimize it. This is like building a racing car engine but powering it with bicycle pedals.
-
-**To realize its potential, Nova Core needs:**
-1. A proper gradient-based learning algorithm connected to the SSM parameters
-2. Integration of its disconnected modules (context, optimizer, knowledge)
-3. Replacement of hardcoded components with learned alternatives
-4. A clear path from prototype to production
-
-**The architecture is worth pursuing.** The field dynamics concept could be a legitimate alternative to self-attention for certain use cases. But the current implementation is a proof of concept, not a working neural network. With proper gradient-based training and module integration, Nova Core could evolve into something genuinely valuable.
+```
+generate_text(prompt, max_words=30)
+    │
+    ├── Loop max_words times:
+    │   ├── Loop detection (ABAB, AAA, ABCABC patterns)
+    │   ├── IF pulse prediction: predict_next_word_via_pulses_excluding()
+    │   │   ├── text_to_pulses(context)
+    │   │   ├── process_cores_parallel()
+    │   │   ├── field.update()
+    │   │   ├── apply_multi_core_semantic_consensus()
+    │   │   ├── find_closest_word_excluding() → cosine similarity
+    │   │   └── Return best word (even if similarity < 0.2!)
+    │   ├── ELSE n-gram backoff (legacy)
+    │   └── Diverse word fallback
+    │
+    └── Join generated words (strip prompt)
+```
 
 ---
 
-*End of Audit. This document was generated by AI analysis of the Nova Core source code at commit `e9a08511e0e8c34bbb203bf267e11b42d0994654`. All assessments are based on static code analysis and may not reflect runtime behavior.*
+## PHASE 5 — MEMORY SYSTEM
+
+### 5.1 Hash Memory (learned_responses)
+
+```rust
+// Type: HashMap<u64, String>
+// Key: hash_text(input)
+// Value: output text
+
+// Operation:
+fn process(text) {
+    let hash = hash_text(text);   // Simple byte-folding hash
+    if learned_responses.contains(hash) {
+        return learned_responses[hash];  // O(1) lookup
+    }
+}
+```
+
+- **Size:** Unbounded (grows with training data)
+- **Persistence:** Saved/loaded in .nova files
+- **Granularity:** Exact input → exact output mapping
+- **Limitation:** No generalization. "What color is the sky" → "blue" is memorized, but "what color is the sky on a cloudy day" produces different hash → not found.
+
+### 5.2 Knowledge Store
+
+```rust
+pub struct KnowledgeStore {
+    concepts: HashMap<String, Concept>,           // word → embedding
+    relations: HashMap<String, Vec<(rel, obj, conf)>>,  // subject → relations
+    reverse_relations: HashMap<String, Vec<(rel, subj, conf)>>,
+    facts: HashMap<u64, Fact>,
+    facts_by_category: HashMap<String, Vec<u64>>,
+}
+```
+
+- Concepts are created from words > 3 chars during training
+- Relations are "followed_by" (adjacent words) and "predicts" (last input → first target)
+- Facts are the full input→target pair stored as text
+- Knowledge is **only used** to augment pulse content via `augment_pulse_with_knowledge()`:
+  - Find closest concept by cosine similarity
+  - Blend concept embedding into pulse content
+- **Critical:** Concept embeddings are deterministic byte-mapped, NOT learned
+
+### 5.3 Vocabulary
+
+```rust
+// Type: HashMap<String, Vec<f32>>
+// Created: During training init_vocabulary()
+// Size: Number of unique words in training data
+
+// Each embedding:
+let seed = hash_bytes(word);
+let mut rng = SeededRng::from_seed(seed);
+for _ in 0..DIM { vec.push(rng.gen_range(-0.3..0.3)); }
+normalize_to_unit(vec);
+```
+
+- **Random** but deterministic
+- **Fixed** — never updated during training
+- **No semantic structure** — Euclidean distance between any two random unit vectors is approximately √2
+
+### 5.4 Field Memory (NovaField)
+
+```rust
+state: Vec<f32>,        // dim=64, global information
+momentum: Vec<f32>,     // momentum for smoother updates
+convergence_history: Vec<Vec<f32>>,  // last 5 states for convergence detection
+ssm: Option<StateSpace>,  // SSM-enhanced field (optional)
+```
+
+- Acts as a global **reservoir** that accumulates information from all pulses
+- Updates: `state += momentum * 0.9 + (field_avg - state) * lr`
+- Influences pulses: `pulse = pulse * (1-diffusion) + state * diffusion`
+- Diffusion decays over time: `diffusion * 0.95^update_count`
+
+### 5.5 Core Memory
+
+```rust
+// Each core has:
+memory: Vec<f32>,      // Size varies: syntax=256, semantic=256, memory=512, reasoning=256, pattern=128
+internal_state: Vec<f32>,  // dim=64
+ssm: StateSpace,          // d_inner×d_state hidden state
+prev_pulse_content: Vec<Vec<f32>>,  // For convergence detection
+```
+
+- `memory` stores only `pulse.content[0]` — the first dimension
+- `internal_state` averages SSM hidden state across dimensions
+- `prev_pulse_content` tracks pulse changes between iterations
+
+### 5.6 N-Gram Patterns
+
+```rust
+ngram_patterns: HashMap<u64, Vec<(String, f32)>>,
+// Key: hash of n-word context
+// Value: list of (next_word, confidence) predictions
+
+// Order: 3 (default)
+// Training: learn_ngrams extracts order-2 and order-3 patterns
+```
+
+- **Order 2:** "the cat" → ["sat": 1.0, "ran": 2.0]
+- **Order 3:** "the cat sat" → ["on": 1.0]
+- Used as **fallback** generation when vocabulary exists but ngrams > 100K
+- Confidence is incremented each time pattern is observed (max 10.0)
+
+### 5.7 Conversation Memory
+
+There is **no explicit conversation memory** or context window in the traditional sense. The LongContextManager is designed for very long single inputs (>2048 tokens), not for multi-turn conversation. Each `process()` call is stateless — the field and cores reset between calls unless explicitly trained.
+
+---
+
+## PHASE 6 — EMBEDDINGS
+
+### 6.1 How Embeddings Are Created
+
+There are **THREE separate embedding mechanisms** in Nova:
+
+#### 6.1.1 Pulse Content (from text)
+```rust
+// pulse.rs:57
+fn from_text(word, dim, pos) -> NovaPulse {
+    let bytes = word.as_bytes();
+    for i in 0..min(bytes.len(), dim) {
+        content[i] = (bytes[i] / 255.0) * 2.0 - 1.0  // byte → [-1, 1]
+    }
+    content[0] += min(word.len() / 20.0, 0.5)  // length signal
+}
+```
+- **Deterministic** — same word → same vector
+- **Not random** — based on ASCII byte values
+- **Semantically meaningless** — "cat" (99, 97, 116) and "car" (99, 97, 114) differ in only the last dimension
+
+#### 6.1.2 Vocabulary Embeddings
+```rust
+// trainer.rs:152
+let seed = hash(word.bytes());
+let mut rng = SeededRng::from_seed(seed);
+vec![rng.gen_range(-0.3..0.3); dim]
+normalize(vec);
+```
+- **Deterministic** — seeded random based on word bytes  
+- **Random** — no relationship between semantically similar words
+- **Fixed** — never updated
+
+#### 6.1.3 Concept Embeddings (Knowledge)
+```rust
+// knowledge.rs:287
+let bytes = word.as_bytes();
+for j in 0..min(bytes.len(), dim) {
+    embedding[j] = (bytes[j] / 255.0) * 2.0 - 1.0
+}
+embedding[1] += sin(position / 100.0)
+normalize(embedding)
+```
+- Same byte-mapping as pulses
+- Different from vocabulary embeddings (different normalization)
+- Also semantically meaningless
+
+### 6.2 Are They Random? Deterministic? Learned? Fixed?
+
+| Embedding Type | Random? | Deterministic? | Learned? | Fixed? |
+|---|---|---|---|---|
+| Pulse content | No | Yes (byte mapping) | No | Computed per call |
+| Vocabulary | Pseudo-random (seeded) | Yes (same seed = same vec) | **No** | **Yes, FIXED FOREVER** |
+| Concept (Knowledge) | No | Yes (byte mapping) | No | Updated via blending |
+| Semantic content | No | Yes (derived from pulse) | No | Updated by transform |
+
+### 6.3 How Similar Words are Represented
+
+**They are NOT similar.** Cosine similarity between vocabulary embeddings for related words:
+
+```
+cos("france", "paris") ≈ random value in [-0.3, 0.3]
+cos("france", "quantum") ≈ random value in [-0.3, 0.3]
+cos("cat", "cat") = 1.0 (deterministic, same seed)
+cos("cat", "dog") ≈ random value
+```
+
+The pulse content (byte-mapped) does have structure: words sharing the same bytes show similarity. But this encodes ASCII byte patterns, not semantics. "France" and "French" share the first 3 bytes "Fre" → their pulse vectors are more similar in the first 3 dimensions. But cosine similarity over all 64 dimensions is still dominated by random values.
+
+---
+
+## PHASE 7 — REASONING
+
+### 7.1 Does Reasoning Actually Happen?
+
+**No, reasoning does not happen in any meaningful sense.**
+
+The system performs three operations that mimic reasoning:
+
+#### 7.1.1 Pulse Transform as "Reasoning"
+
+The reasoning core (`reasoning_transform_v2`) performs:
+- **Contradiction detection:** If two pulses have cosine similarity < -0.3, attenuate both values
+- **Implication propagation:** Strong pulses (high weight) influence similar weak pulses
+- **Evidence accumulation:** Average all confident pulse directions
+
+However, this operates on **byte-mapped pulse vectors** — the "contradictions" and "agreements" are in byte-value space, not semantic space. Two pulses representing "hot" and "cold" may or may not have negative cosine similarity in byte space — this is entirely coincidental.
+
+#### 7.1.2 What Actually Happens
+
+The chain is:
+```
+Input → deterministic byte vectors → random linear transforms → 
+cosine similarity against random word vectors → output
+
+This is NOT reasoning. It is nearest-neighbor search in a random projection space.
+```
+
+#### 7.1.3 Math and Tool "Reasoning"
+
+When keyword-gated paths trigger:
+
+```
+Math: Keyword match ("solve", "calculate") → extract numbers → evaluate expression → format output
+Tool: Keyword match ("read file", "http get") → extract path/url → invoke tool → format output
+Code: Keyword match ("fn ", "function") → route to coding engine → format output
+```
+
+These are **rule-based routing**, not neural reasoning. They work because they're hardcoded logic, not learned behavior.
+
+### 7.2 Pulse Propagation vs. Reasoning
+
+Each iteration of the pulse propagation does:
+1. **Cores transform pulses** — nonlinear scalar operations (tanh, amplify, blend memory)
+2. **SSM transform** — state-space pass (linear ODE discretization)
+3. **Field diffusion** — weighted average pulse → field → back to pulses
+4. **Cross-core communication** — blend core states into pulses
+
+This is most similar to **iterative message passing** or **diffusion on a complete graph** — but the messages have no semantic content because the initial embeddings are byte-mapped garbage.
+
+---
+
+## PHASE 8 — OUTPUT GENERATION
+
+### 8.1 Why "What color is the sky" → "blue"
+
+If the training data includes `("what color is the sky", "blue")`:
+
+```
+hash("what color is the sky") = 12345u64
+learned_responses[12345] = "blue"
+
+// On query:
+hash("what color is the sky") = 12345u64
+return learned_responses[12345] → "blue" ✓
+```
+
+**This works because of pure hash-table memorization, not understanding.**
+
+### 8.2 Why "What is capital of France" → garbage
+
+Scenarios:
+
+**Scenario A: NOT in training data**
+```
+hash("what is the capital of france") = 67890u64
+learned_responses[67890] = NOT FOUND
+
+// Falls through to neural path:
+pulses = text_to_pulses("what is the capital of france")
+// process through cores + field (5 iterations)
+// map_pulses_to_vocab:
+//   pulse[0] → cosine similarity vs random vocab → "the" or random word
+//   pulse[1] → cosine similarity vs random vocab → "capital" (might match by byte chance)
+//   pulse[2] → some random word
+// OUTPUT: "the capital the of france something" ✗
+```
+
+**Scenario B: In training data (trained version)**
+```
+hash("what is the capital of france") = 67890u64
+learned_responses[67890] = "paris"
+
+// On query → "paris" ✓
+// But only because it's EXACTLY memorized
+```
+
+### 8.3 Why "What is the capital of France?" (with question mark) fails
+
+```
+hash("What is the capital of France?") != hash("what is the capital of france")
+// Case sensitivity + punctuation → different hash → NOT FOUND
+// Falls through to neural path → garbage
+```
+
+### 8.4 Complete Decision Chain for Unknown Input
+
+```
+User: "Explain quantum entanglement"
+
+1. Hash check: hash("Explain quantum entanglement") → not in learned_responses → continue
+2. Partial match: no stored input contains "quantum entanglement" → continue
+3. Tool check: doesn't contain tool keywords → skip
+4. Math check: doesn't contain math keywords → skip
+5. Code check: doesn't contain code keywords → skip
+6. Neural path:
+   a. text_to_pulses → [pulse("Explain"), pulse("quantum"), pulse("entanglement")]
+   b. Each pulse has 64 dimensions, first few filled with byte values
+   c. 5-15 iterations through cores + field
+   d. Cores apply tanh, amplify, memory, reasoning, pattern transforms
+   e. SSM runs selective scan on each pulse
+   f. Field averages pulses and diffuses back
+   g. Multi-core consensus blends core states
+   h. map_pulses_to_vocab: cosine similarity against ALL random word vectors
+   i. Best matches: "the", "quantum" (might match by byte), "field" (random chance)
+7. OUTPUT: "the quantum field the of the" ← plausible-sounding but meaningless
+```
+
+---
+
+## PHASE 9 — BENCHMARK (vs. Modern LLMs)
+
+Component-by-component comparison:
+
+| Component | GPT-4 | DeepSeek | Llama 3 | Gemini | **Nova** |
+|---|---|---|---|---|---|
+| **Tokenizer** | BPE (100K vocab) | BPE (128K) | BPE (128K) | SentencePiece (256K) | **None. Byte → float mapping** |
+| **Embeddings** | Learned 12800d | Learned 7168d | Learned 8192d | Learned | **Seeded random. Fixed.** |
+| **Training** | BP + RLHF + SFT | BP + MoE + RL | BP + SFT + RLHF | BP + multimodal | **Hash memorization + finite-diff (≈NOT training)** |
+| **Memory** | Transformer context (128K) | 128K context | 128K context | 2M context | **Hash table + n-gram statistics** |
+| **Reasoning** | Chain-of-thought, multi-step | Multi-step, tool use | Multi-step | Multi-modal reasoning | **Keyword-gated rule dispatch + pulse diffusion (≈NO reasoning)** |
+| **Generation** | Autoregressive, temperature | Autoregressive | Autoregressive | Autoregressive | **Nearest neighbor + cosine similarity** |
+| **Learning** | Gradient descent + data | Gradient descent | Gradient descent | Gradient descent | **Hash insert + finite difference (≈NO learning)** |
+| **Inference** | Efficient (TensorRT, vLLM) | Efficient | Efficient (llama.cpp) | Efficient | **CPU-only. 5 cores × iterations × cosine sim over all vocab** |
+| **Optimization** | AdamW, LR schedule | AdamW, MoE routing | AdamW, QLoRA | AdamW, PA | **AdamW + finite difference (≈NOT used)** |
+| **Context** | 128K tokens | 128K | 128K | 2M | **2048 "pulses" (≈50 words)** |
+| **Knowledge** | Trained on internet-scale | Trained on internet-scale | Trained on internet-scale | Trained on internet-scale | **100-1000 hash associations from small training set** |
+| **Coding** | Expert-level | Expert-level | Strong | Strong | **Keyword-gated: code generation is a hardcoded template** |
+| **Tool use** | Function calling | Tool use built-in | Tool use via JSON | Extension API | **Keyword-gated: file read/write/http/search templates** |
+
+### 9.1 Nova's Unique Properties (for good or bad)
+
+| Property | Nova | Traditional LLM |
+|---|---|---|
+| Complexity per token | **O(n)** (field) | O(n²) (attention) |
+| Complexity per inference | **O(cores × dim × iterations)** | O(1) (single forward pass) |
+| Memory per token | **O(dim)** = 64 floats | O(dim) = 4096-12800 floats |
+| Training speed | Fast (hash insert) | Slow (BP over billions of params) |
+| Generalization | **None** (hash lookup only) | Strong (learned representations) |
+| Parameter count | **~100K** (mostly SSM) | **7B-1.8T** |
+| Knowledge capacity | **~1000 hash entries** | **Trillions of tokens** |
+
+---
+
+## PHASE 10 — BOTTLENECKS (Ranked)
+
+### #1. VOCABULARY IS RANDOM AND FIXED — Highest Impact
+
+**Problem:** Vocabulary embeddings are created with seeded random number generators and are NEVER updated during training. The entire "neural" output path relies on cosine similarity between pulse vectors and these random vectors. Since the vectors have no semantic structure, the output is effectively random word selection.
+
+**Why:** `trainer.rs:152` creates vocab with `StdRng::from_seed(seed).gen_range(-0.3..0.3)` and never trains them. The cosine similarity between any two random unit vectors in 64D is ~0 with std ~0.125.
+
+**Impact:** The neural path produces garbage for any input not exactly memorized.
+
+### #2. FINITE DIFFERENCE GRADIENTS — Critical
+
+**Problem:** Instead of backpropagation (which requires automatic differentiation or at least differentiable operations), Nova uses finite-difference gradient approximation:
+
+```
+grad ≈ (loss(x+ε) - loss(x-ε)) / 2ε
+```
+
+This requires **2 complete forward passes per parameter**. With ~15,700 parameters and ~100μs per forward pass, that's ~3 seconds per training example. For practical training (1000 examples), that's ~50 minutes — and each gradient is extremely noisy.
+
+**Why:** Nova's operations (tanh, clamp, if-statements, hash lookups) are not differentiable. The entire pipeline was built without autograd in mind.
+
+**Impact:** Training is impractically slow AND produces unusably noisy gradients. The model learns nothing from the gradient path.
+
+### #3. BYTE-LEVEL PULSE ENCODING — Critical
+
+**Problem:** `NovaPulse::from_text()` maps ASCII byte values directly to float vectors. This means:
+- "cat" → [0.776, 0.525, 0.388, ...] (bytes 99, 97, 116)
+- "car" → [0.776, 0.525, 0.478, ...] (bytes 99, 97, 114)
+- "dog" → [0.580, 0.792, 0.710, ...] (bytes 100, 111, 103)
+
+"cat" and "car" have cosine similarity ~0.95 (share first 2 bytes). "cat" and "dog" have similarity ~0.3. This is ASCII-level similarity, NOT semantic. Transformers learned embeddings that make "cat" closer to "kitten" than "car".
+
+**Impact:** The core transforms operate on byte-level patterns, not meaning. "Reasoning" over byte values produces byte-level outputs.
+
+### #4. HASH TABLE IS THE ONLY WORKING MEMORY — High Impact
+
+**Problem:** The `learned_responses` HashMap is the only mechanism that produces correct outputs. It's a simple hash table:
+- Input `"what color is the sky"` → hash → stored output `"blue"`
+- Input `"what color is the sky today"` → different hash → NOT FOUND
+
+There is NO generalization. Every possible input must be exactly memorized.
+
+**Impact:** The model cannot answer ANY question it hasn't seen before. Zero-shot generalization = 0.
+
+### #5. NO TOKENIZATION — High Impact
+
+**Problem:** Traditional LLMs use subword tokenization (BPE, SentencePiece) that handles:
+- Rare words (split into known subwords)
+- Unknown words (split into subwords)
+- Consistent vocabulary (OOV is minimal)
+
+Nova's word-level splitting handles none of this:
+- "France?" is a different "word" from "France"
+- "running" and "run" are completely different
+- Unknown words get byte mappings but no semantic handle
+
+**Impact:** Punctuation, capitalization, and morphology all create different inputs. P50K different surface forms of 10K base words.
+
+### #6. COSINE SIMILARITY IS O(∣VOCAB∣ × ∣PULSES∣ × DIM) — Medium Impact
+
+**Problem:** Every inference step computes cosine similarity between EVERY pulse and EVERY vocabulary word. With V=1000 words, P=10 pulses, D=64: that's 640,000 multiply-adds per inference. For V=10,000: 6.4M operations. No indexing, no partitioning, no approximate nearest neighbor.
+
+**Impact:** Scales linearly with vocabulary, which limits vocabulary size.
+
+### #7. SSM PARAMETERS ARE MOSTLY UNTRAINED — Medium Impact
+
+**Problem:** The SSM (State Space Model) has parameters (A_log, B, C, delta, delta_bias, D) that are:
+- Initialized with small random/heuristic values  
+- Only C, delta, and delta_bias gradients are NOT computed in finite-diff
+- Only first 32 of 1024 parameters per matrix are perturbed
+- Never exposed to real gradient descent
+
+**Impact:** The SSM is running with essentially random parameters, making it a random linear transform rather than a learned selective scan.
+
+### #8. ADAPTIVE ITERATION IS COSTLY FOR NO BENEFIT — Medium Impact
+
+**Problem:** Each inference runs 2-20 iterations of the full core+field pipeline. Each iteration involves:
+- 5 cores running in parallel (each with SSM transform)
+- Field update (average all pulses)
+- Cross-core communication (broadcast + blend)
+- Knowledge augmentation (concept lookup + blend)
+
+For 10 iterations: that's 50 core processes + 10 field updates + 10 comm cycles. With ~100μs per core process + ~50μs for field + ~20μs for comm = ~1.7ms per inference. For comparison, a 7B LLM generates ~30 tokens/ms on GPU.
+
+**Impact:** Nova is slower than it needs to be for outputs that are still garbage.
+
+### #9. CONVERGENCE IS MEASURED BY BYTE-STABILITY, NOT SEMANTIC — Medium Impact
+
+**Problem:** Convergence detection checks if pulse content stops changing between iterations. But because pulses encode byte values, "convergence" means the byte values have stabilized — not that a semantic understanding has been reached.
+
+**Impact:** Early exit happens when pulses stop changing, not when they're "right." This could happen in 2 iterations (bad) or never converge (max iterations).
+
+### #10. NO GRADIENT FLOW TO VOCABULARY — Medium Impact
+
+**Problem:** Even if the finite-difference path worked perfectly, the vocabulary embeddings are never updated. The model would need to learn to produce pulse vectors that exactly match the random initialization of each word embedding. This is like learning to output specific random numbers — the target is meaningless.
+
+**Impact:** The loss function (MSE between pulse vectors and random vocabulary embeddings) is fundamentally ill-posed. Lowering this loss doesn't improve semantic output quality.
+
+---
+
+## PHASE 11 — SUMMARY
+
+### What Nova Actually IS
+
+Nova is a **hash-based memorization system** wrapped in an elegant but non-functional neural architecture. The correct output comes from exactly one place: `learned_responses[hash(input)]`. This is a hash table.
+
+The pulse/field/core/SSM pipeline is **executed but does not contribute to correct outputs**. It produces plausible-sounding word sequences by:
+1. Taking byte-level input encodings
+2. Applying random-ish transforms
+3. Finding the nearest random word vector
+4. Returning the result
+
+### What Makes It Look Like It Works
+
+1. **Training on simple QA pairs** → hash table memorizes them → inference from hash → correct output
+2. **Keyword-gated engines** → "calculate", "prime", "fn " trigger hardcoded paths
+3. **Conversational overrides** (now removed) provided canned responses
+4. **The vocabulary random model** by chance sometimes hits the right word
+
+### The Fundamental Issue
+
+The architecture has an **irresolvable conceptual flaw at its core**: the vocabulary embeddings are random and fixed. Even if gradient descent were perfect, the loss function (MSE between pulse vector and random embedding) is not aligned with output quality. The model could achieve zero loss by learning to output specific random numbers for each input — but this doesn't correspond to any semantic understanding.
+
+For the neural path to work, the system needs AT MINIMUM:
+1. **Learned embeddings** that encode semantic relationships
+2. **Differentiable operations** for backpropagation
+3. **Gradient flow into ALL parameters** including vocabulary
+4. **A loss function that measures answer correctness**, not vector similarity
+
+### What Would Need to Change (Directionally)
+
+1. Replace byte-mapped pulse encoding with learned embeddings
+2. Make ALL operations differentiable for proper backprop
+3. Train vocabulary jointly with the rest of the model
+4. Replace finite-difference with actual gradient computation
+5. Use a proper autoregressive loss (next-word prediction)
+6. Scale parameters to at least millions
+7. Train on at least millions of tokens
