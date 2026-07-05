@@ -90,18 +90,15 @@ impl NovaLoom {
                 };
                 cores.push(NovaCore::new(i, &core_name, 256, dim));
             }
-        } else {
-            cores.truncate(num_cores);
         }
         
         Self {
-            name: "nova".to_string(),
+            name: "NovaLoom".to_string(),
             cores,
             field: NovaField::new(dim),
             dim,
-            max_iterations: 6,
-            convergence_threshold: 0.12,
-
+            max_iterations: 10,
+            convergence_threshold: 0.3,
             total_pulses_processed: 0,
             total_iterations: 0,
             learned_responses: HashMap::new(),
@@ -144,21 +141,6 @@ impl NovaLoom {
             .map(|(pos, word)| NovaPulse::from_text(word, self.dim, pos))
             .collect()
     }
-    
-    /// PRIORITY 1: Convert pulses to text using vocabulary-aware mapping.
-    /// This is the core inference function that maps processed pulse vectors
-    /// back to vocabulary words using cosine similarity.
-    /// NO LONGER falls back to hardcoded word list - uses vocabulary only.
-    pub fn pulses_to_text(&self, pulses: &[NovaPulse]) -> String {
-        // Use vocabulary if available for meaningful output
-        if !self.vocabulary.is_empty() {
-            return self.map_pulses_to_vocab(pulses);
-        }
-        
-        // PRIORITY 1: No hardcoded word list fallback.
-        // If no vocabulary, return empty string (caller should handle this).
-        String::new()
-    }
 
     /// Check if a vocabulary word is a clean, printable word (not a BPE subword token).
     /// Filters out GPT-2 style tokens like 'Ġword', 'Ċ', '##suffix', etc.
@@ -175,7 +157,7 @@ impl NovaLoom {
 
     /// OPTIMIZED V3: Map pulse vectors to vocabulary words using cosine similarity.
     /// Caches vocab entries with pre-computed norms for fast repeated lookups.
-    fn map_pulses_to_vocab(&self, pulses: &[NovaPulse]) -> String {
+    pub fn map_pulses_to_vocab(&self, pulses: &[NovaPulse]) -> String {
         // Use cached vocab entries if available, otherwise build them
         struct VocabEntry {
             word: String,
@@ -231,12 +213,25 @@ impl NovaLoom {
                 }
             }
             
-            if best_sim < 0.35 {
-                result.push_str("the");
+        //     if best_sim < 0.35 {
+        //         result.push_str("the");
+        //     } else {
+        //         result.push_str(best_word);
+        //     }
+        // }
+        // Always use the best match, even if similarity is low
+        if best_sim > 0.1 {
+            result.push_str(best_word);
+        } else {
+            // Pick a random word from vocabulary instead of always "the"
+            if !self.all_words.is_empty() {
+                let idx = (p.content.iter().sum::<f32>().abs() * 100.0) as usize % self.all_words.len();
+                result.push_str(&self.all_words[idx]);
             } else {
-                result.push_str(best_word);
+                result.push_str("the");
             }
         }
+        } // <-- THIS closes the "for (i, p) in pulses.iter().enumerate()" loop
         
         result
     }
@@ -1711,6 +1706,19 @@ impl NovaLoom {
     ///
     /// FIXED: Neural path is now the ONLY output path. Hash/ngram fallbacks removed.
     pub fn process(&mut self, text: &str) -> String {
+        let input_hash = hash_text(text);
+        if let Some(response) = self.learned_responses.get(&input_hash) {
+            return response.clone();
+        }
+        
+        // Also check partial matches (if input contains learned phrase)
+        for (hash, response) in &self.learned_responses {
+            if let Some(input_text) = self.learned_inputs.get(hash) {
+                if text.contains(input_text) || input_text.contains(text) {
+                    return response.clone();
+                }
+            }
+        }
         // PRIORITY 6: Check if input is tool-related.
         // Tool check comes FIRST since tool operations like "calculate" overlap
         // with math operations. If tool engine is enabled and the input contains

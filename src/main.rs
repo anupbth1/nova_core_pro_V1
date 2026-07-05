@@ -377,7 +377,7 @@ fn print_header(nova: &NovaLoom) {
     println!("\n{}", "═".repeat(60));
     println!("{}", "🚀 NOVA CORE - Zero Transformer AI".bright_green().bold());
     println!("{}", "═".repeat(60));
-    println!("{} {}", "📌 CURRENT MODEL:".bright_yellow(), nova.model_info().cyan());
+    println!("{} {}", "📌 CURRENT MODEL:".bright_yellow(), nova.model_version().cyan());
     println!("{}", "═".repeat(60));
     println!("   • No Attention (O(n) field dynamics)");
     println!("   • No Tokens (continuous pulses)");
@@ -506,7 +506,7 @@ fn main() {
                 }
                 
                 if input == "stats" {
-                    println!("📊 {}", nova.stats());
+                    println!("📊 {}", nova.model_version());
                     continue;
                 }
                 
@@ -877,7 +877,7 @@ fn main() {
                 }
 
                 ModelAction::Save { name } => {
-                    println!("📌 Saving current model: {}", nova.model_info().cyan());
+                    println!("📌 Saving current model: {}", nova.model_version().cyan());
                     match model_mgr.save_model(&nova, &name) {
                         Ok(path) => println!("✅ Model saved to: {}", path),
                         Err(e) => eprintln!("❌ Failed to save model: {}", e),

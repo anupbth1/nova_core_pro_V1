@@ -490,7 +490,7 @@ impl NovaTrainer {
                             break;
                         }
                     }
-                    model.pulses_to_text(&pulses)
+                    model.map_pulses_to_vocab(&pulses)
                 };
                 
                 let output_lower = output.to_lowercase();
