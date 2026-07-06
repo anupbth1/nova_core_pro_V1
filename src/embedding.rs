@@ -165,16 +165,21 @@ impl NovaEmbedding {
             token_norms[token_id] = sum_sq.sqrt().max(1e-8);
         }
 
-        // Build list of "real" tokens (not special tokens)
+        // Build list of "real" tokens (English words and punctuation only)
+        // Exclude ALL <VOCAB_N> and <BYTE_N> placeholders
         let mut real_token_ids = Vec::new();
         for id in 4..vocab_size {
             let token = &id_to_token[id];
             if !token.starts_with('<') {
                 real_token_ids.push(id);
             }
-            // Also include some byte tokens that represent actual text
-            if token.starts_with("<BYTE_") || token == " " || token == "." || token == "," || token == "!" || token == "?" {
-                real_token_ids.push(id);
+        }
+        // Also add common punctuation characters
+        for punct in [" ", ".", ",", "!", "?", ";", ":", "'", "\""].iter() {
+            if let Some(&id) = token_to_id.get(*punct) {
+                if !real_token_ids.contains(&id) {
+                    real_token_ids.push(id);
+                }
             }
         }
 
@@ -208,34 +213,20 @@ impl NovaEmbedding {
     }
 
     /// Get embedding for a single token ID, including positional encoding.
-    /// Uses the ACTUAL embedding dimension from the table, not compile-time EMBED_DIM.
+    /// Uses the ACTUAL embedding dimension from the table.
+    /// CRITICAL: token_embeddings has shape [VOCAB_SIZE x actual_dim] where
+    /// actual_dim = token_embeddings.len() / VOCAB_SIZE.
+    /// We must NOT use compile-time EMBED_DIM for indexing.
     pub fn get_embedding(&self, token_id: usize, position: usize) -> Vec<f32> {
-        let vocab_size = if self.token_embeddings.is_empty() { VOCAB_SIZE } else { self.token_embeddings.len() / EMBED_DIM };
-        if vocab_size == 0 { return vec![0.0; EMBED_DIM]; }
-        let token_id = token_id.min(vocab_size - 1);
+        if self.token_embeddings.is_empty() { return vec![0.0; EMBED_DIM]; }
+        let actual_dim = self.token_embeddings.len() / VOCAB_SIZE; // REAL embedding dimension
+        if actual_dim == 0 { return vec![0.0; EMBED_DIM]; }
+        let token_id = token_id.min(VOCAB_SIZE - 1);
         let pos = position.min(MAX_SEQ_LEN - 1);
-        let mut embed = vec![0.0; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            embed[i] = self.token_embeddings[token_id * EMBED_DIM + i]
-                + self.positional_encoding[pos * EMBED_DIM + i];
-        }
-        embed
-    }
-
-    /// Get embedding for ANY model dimension (not just EMBED_DIM).
-    /// Uses the ACTUAL embedding dimension stored in the model.
-    pub fn get_embedding_dynamic(&self, token_id: usize, position: usize, model_dim: usize) -> Vec<f32> {
-        if self.token_embeddings.is_empty() || model_dim == 0 {
-            return vec![0.0; model_dim.max(EMBED_DIM)];
-        }
-        let vocab_size = self.token_embeddings.len() / EMBED_DIM; // stored dimension
-        let token_id = token_id.min(vocab_size - 1);
-        let pos = position.min(MAX_SEQ_LEN - 1);
-        let mut embed = vec![0.0; model_dim];
-        let use_dim = EMBED_DIM.min(model_dim);
-        for i in 0..use_dim {
-            embed[i] = self.token_embeddings[token_id * EMBED_DIM + i]
-                + self.positional_encoding[pos * EMBED_DIM + i];
+        let mut embed = vec![0.0; actual_dim];
+        for i in 0..actual_dim {
+            embed[i] = self.token_embeddings[token_id * actual_dim + i]
+                + self.positional_encoding[pos * actual_dim + i];
         }
         embed
     }
@@ -366,40 +357,28 @@ impl NovaEmbedding {
     }
 
     /// FAST vocabulary search: compute logits using pre-filtered token set.
-    /// Returns logits for ALL tokens but only computes for ~300 real tokens.
-    /// Uncomputed tokens get -10.0 (uniform small probability for loss stability).
+    /// Uses ACTUAL embedding dimension (not compile-time EMBED_DIM).
     pub fn compute_logits_fast(&self, pulse_content: &[f32]) -> Vec<f32> {
-        let dim = EMBED_DIM;
+        if self.token_embeddings.is_empty() { return vec![0.0; VOCAB_SIZE]; }
+        let dim = self.token_embeddings.len() / VOCAB_SIZE; // actual dimension
+        if dim == 0 { return vec![0.0; VOCAB_SIZE]; }
         
-        // Normalize pulse
         let norm: f32 = pulse_content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
-        if norm < 1e-7 {
-            return vec![0.0; VOCAB_SIZE];
-        }
+        if norm < 1e-7 { return vec![0.0; VOCAB_SIZE]; }
         
-        // Start with all logits at a baseline small value
-        let mut logits = vec![-5.0; VOCAB_SIZE];
+        let mut logits = vec![-100.0; VOCAB_SIZE]; // start VERY low
+        let pulse_len = pulse_content.len().min(dim);
         
-        // Compute logits for real tokens (English words, characters, punctuation)
-        let num_real = self.real_token_ids.len();
-        for idx in 0..num_real {
-            let token_id = self.real_token_ids[idx];
+        // Compute for real tokens
+        for &token_id in &self.real_token_ids {
             let start = token_id * dim;
             let t_norm = self.token_norms[token_id];
-            
             let mut dot = 0.0f32;
-            for i in 0..dim.min(pulse_content.len()) {
+            for i in 0..pulse_len {
                 dot += pulse_content[i] * self.token_embeddings[start + i];
             }
-            let similarity = dot / (norm * t_norm);
-            logits[token_id] = similarity * 10.0;
+            logits[token_id] = (dot / (norm * t_norm)) * 5.0;
         }
-        
-        // Special tokens get very low probability
-        for &special_id in [0usize, 1, 3].iter() {
-            logits[special_id] = -100.0;
-        }
-        
         logits
     }
 
