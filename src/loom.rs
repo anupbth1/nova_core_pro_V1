@@ -47,11 +47,14 @@ impl NovaLoom {
     }
 
     /// Initialize trainer for supervised learning
+    /// CRITICAL: Share the loom's embedding table with trainer so training actually updates it
     pub fn init_trainer(&mut self, config: TrainingConfig) {
+        // Create trainer with same dim as loom
+        let loom_dim = self.embedding.token_embeddings.len() / VOCAB_SIZE;
         let trainer = NovaTrainer::new(
-            NovaEmbedding::new(VOCAB_SIZE, EMBED_DIM), // Will be replaced
-            create_standard_cores(EMBED_DIM),
-            NovaField::new(EMBED_DIM),
+            NovaEmbedding::new_with_data(VOCAB_SIZE, loom_dim, &self.embedding.token_embeddings),
+            create_standard_cores(loom_dim),
+            NovaField::new(loom_dim),
             config,
         );
         self.trainer = Some(trainer);
@@ -73,39 +76,33 @@ impl NovaLoom {
     }
 
     /// Direct generation: uses raw embedding similarity (bypasses SSM).
-    /// Predicts one token at a time from the last generated token.
+    /// Filters out single-character tokens and special tokens.
     fn direct_generate(&mut self, input: &str, max_tokens: usize) -> String {
         let input_ids = self.embedding.tokenize(input);
         if input_ids.len() < 2 {
             return input.to_string();
         }
-        // input_ids = [BOS, ...word_ids..., EOS]
-        let context = &input_ids[..input_ids.len() - 1]; // exclude EOS
+        let context = &input_ids[..input_ids.len() - 1];
         
         let mut output = input.to_string();
         let mut current_id = *context.last().unwrap_or(&3);
-        let input_len = input.split_whitespace().count(); // count input words
         
-        for step in 0..max_tokens {
+        for step in 0..max_tokens.min(8) { // max 8 tokens
             let pulse = self.embedding.get_embedding(current_id, step);
             let logits = self.embedding.compute_logits_full(&pulse);
-            let sampled_id = self.sample_token(&logits);
+            
+            // Sample, but ONLY allow tokens that are multi-character words
+            let sampled_id = self.sample_word_token(&logits);
             
             let token_str = if sampled_id < self.embedding.id_to_token.len() {
                 self.embedding.id_to_token[sampled_id].clone()
             } else { String::new() };
             
-            // Stop conditions
             if token_str == "<EOS>" || sampled_id == 2 { break; }
             if token_str.is_empty() || token_str.starts_with('<') { break; }
+            if token_str.len() <= 1 { break; } // filter single chars
             
-            // Check if we've generated this exact word within last 3
-            if step > input_len && output.contains(&format!(" {} ", token_str)) { break; }
-            if step > input_len && output.ends_with(&token_str) { break; }
-            
-            // Add space
             if !output.ends_with(' ') && !token_str.is_empty() &&
-               token_str.chars().all(|c| c.is_alphanumeric()) &&
                output.chars().last().map(|c| c.is_alphanumeric()).unwrap_or(false) {
                 output.push(' ');
             }
@@ -113,6 +110,36 @@ impl NovaLoom {
             current_id = sampled_id;
         }
         output
+    }
+
+    /// Sample only words (min 2 chars) from logits
+    fn sample_word_token(&self, logits: &[f32]) -> usize {
+        // Find top token that is a word (not single char, not special)
+        let mut best_id = 2; // EOS default
+        let mut best_score = f32::NEG_INFINITY;
+        for (id, &score) in logits.iter().enumerate() {
+            if score <= best_score { continue; }
+            if id >= self.embedding.id_to_token.len() { continue; }
+            let token = &self.embedding.id_to_token[id];
+            if token.starts_with('<') { continue; }
+            if token.len() <= 1 { continue; } // skip single chars
+            best_id = id;
+            best_score = score;
+        }
+        
+        // If no 2+ char token found, use highest scoring any token
+        if best_id == 2 {
+            let mut any_best = 3;
+            let mut any_score = f32::NEG_INFINITY;
+            for (id, &score) in logits.iter().enumerate() {
+                if score > any_score {
+                    any_score = score;
+                    any_best = id;
+                }
+            }
+            return any_best;
+        }
+        best_id
     }
 
     /// Compute output logits from pulse content
@@ -179,9 +206,15 @@ impl NovaLoom {
     }
 
     /// Train on a batch of text
+    /// CRITICAL: Copy trained embedding back from trainer to loom after each batch
     pub fn train(&mut self, texts: &[String]) -> f32 {
         if let Some(ref mut trainer) = self.trainer {
-            trainer.train_batch(texts)
+            let loss = trainer.train_batch(texts);
+            // Sync trained embeddings back to loom
+            self.embedding.token_embeddings.copy_from_slice(
+                &trainer.embedding.token_embeddings
+            );
+            loss
         } else {
             println!("No trainer initialized. Call init_trainer() first.");
             0.0

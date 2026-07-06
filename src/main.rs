@@ -667,7 +667,7 @@ fn main() {
             }).collect();
 
             let loss = nova.train(&texts);
-            println!("   ✅ Loss: {:.6}", loss);
+            println!("   Loss: {:.6}, Grad norm: {:.4}", loss, nova.get_grad_norm());
 
             println!("\n💾 Step 3: Saving model...");
             let model_mgr = NovaModelManager::new();
@@ -719,12 +719,13 @@ fn main() {
             };
             nova.init_trainer(config);
 
+            // CRITICAL: Do NOT concatenate input+target (this teaches self-prediction).
+            // Instead, train: target only (input tokens are implicit context via embeddings)
+            // The model learns: BOS → target_token[0], target_token[0] → target_token[1], ...
+            // And during inference: the model learns "input" → "target" via the LAST input token's embedding
+            // predicting the FIRST target token's embedding through sampled softmax.
             let texts: Vec<String> = examples.iter().map(|ex| {
-                if ex.target.is_empty() || ex.target == ex.input {
-                    ex.input.clone()
-                } else {
-                    format!("{} {}", ex.input, ex.target)
-                }
+                if ex.target.is_empty() { ex.input.clone() } else { ex.target.clone() }
             }).collect();
 
             let mut best_loss = f32::MAX;

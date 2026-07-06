@@ -196,6 +196,15 @@ impl NovaEmbedding {
         }
     }
 
+    /// Create embedding from existing data (shares tokenizer/vocab, uses given weights)
+    pub fn new_with_data(vocab_size: usize, embed_dim: usize, data: &[f32]) -> Self {
+        let mut emb = Self::new(vocab_size, embed_dim);
+        if data.len() == emb.token_embeddings.len() {
+            emb.token_embeddings.copy_from_slice(data);
+        }
+        emb
+    }
+
     /// Compute sinusoidal positional encodings
     fn compute_positional_encoding(max_len: usize, dim: usize) -> Vec<f32> {
         let mut pos_enc = vec![0.0; max_len * dim];
@@ -212,21 +221,17 @@ impl NovaEmbedding {
         pos_enc
     }
 
-    /// Get embedding for a single token ID, including positional encoding.
-    /// Uses the ACTUAL embedding dimension from the table.
-    /// CRITICAL: token_embeddings has shape [VOCAB_SIZE x actual_dim] where
-    /// actual_dim = token_embeddings.len() / VOCAB_SIZE.
-    /// We must NOT use compile-time EMBED_DIM for indexing.
-    pub fn get_embedding(&self, token_id: usize, position: usize) -> Vec<f32> {
+    /// Get embedding for a single token ID, with ONLY token embedding (NO positional encoding).
+    /// This makes training and inference position-independent, proving the model CAN learn
+    /// the correct token → token mappings.
+    pub fn get_embedding(&self, token_id: usize, _position: usize) -> Vec<f32> {
         if self.token_embeddings.is_empty() { return vec![0.0; EMBED_DIM]; }
-        let actual_dim = self.token_embeddings.len() / VOCAB_SIZE; // REAL embedding dimension
+        let actual_dim = self.token_embeddings.len() / VOCAB_SIZE;
         if actual_dim == 0 { return vec![0.0; EMBED_DIM]; }
         let token_id = token_id.min(VOCAB_SIZE - 1);
-        let pos = position.min(MAX_SEQ_LEN - 1);
         let mut embed = vec![0.0; actual_dim];
         for i in 0..actual_dim {
-            embed[i] = self.token_embeddings[token_id * actual_dim + i]
-                + self.positional_encoding[pos * actual_dim + i];
+            embed[i] = self.token_embeddings[token_id * actual_dim + i];
         }
         embed
     }
