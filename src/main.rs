@@ -136,6 +136,9 @@ enum Commands {
         /// Max rows to load (0 = ALL)
         #[arg(short = 'm', long, default_value = "0")]
         max_rows: usize,
+        /// Number of training epochs
+        #[arg(short = 'e', long, default_value = "1")]
+        epochs: usize,
         /// Model dimension
         #[arg(long, default_value = "256")]
         dim: usize,
@@ -677,7 +680,7 @@ fn main() {
             println!("💡 Try: nova smart-chat --model {}", model_name);
         }
 
-        Commands::LocalTrain { file, input_col, target_col, max_rows, dim, cores, model_name } => {
+        Commands::LocalTrain { file, input_col, target_col, max_rows, epochs, dim, cores, model_name } => {
             println!("{}", "═".repeat(60));
             println!("📁 LOCAL DATASET TRAINING");
             println!("{}", "═".repeat(60));
@@ -705,7 +708,7 @@ fn main() {
             println!("   ✅ Loaded {} examples", examples.len());
 
             println!("\n🎯 Training model...");
-            println!("   Dim: {}, Cores: {}", dim, cores);
+            println!("   Dim: {}, Cores: {}, Epochs: {}", dim, cores, epochs);
 
             let mut nova = NovaLoom::new(*dim, VOCAB_SIZE);
             let config = TrainingConfig {
@@ -724,8 +727,13 @@ fn main() {
                 }
             }).collect();
 
-            let loss = nova.train(&texts);
-            println!("   ✅ Loss: {:.6}", loss);
+            let mut best_loss = f32::MAX;
+            for epoch in 0..*epochs {
+                let loss = nova.train(&texts);
+                if loss < best_loss { best_loss = loss; }
+                println!("   Epoch {}/{}: Loss: {:.6}", epoch + 1, epochs, loss);
+            }
+            println!("   ✅ Best loss: {:.6}", best_loss);
 
             println!("\n💾 Saving model...");
             let model_mgr = NovaModelManager::new();
