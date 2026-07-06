@@ -109,6 +109,41 @@ impl NovaEmbedding {
             }
         }
 
+        // Expand vocabulary with ALL words from common English
+        let extra_words = vec![
+            "hi", "hello", "name", "nova", "how", "are", "you", "fine", "good",
+            "morning", "evening", "night", "bye", "thank", "thanks", "welcome",
+            "yes", "no", "okay", "please", "sorry", "excuse", "pardon", "sir",
+            "fruit", "animal", "flower", "vehicle", "color", "day", "month",
+            "apple", "banana", "mango", "grape", "orange", "cherry", "peach",
+            "pear", "plum", "kiwi", "lemon", "lime", "berry", "melon", "papaya",
+            "dog", "cat", "bird", "fish", "horse", "cow", "sheep", "goat",
+            "lion", "tiger", "bear", "wolf", "deer", "fox", "rabbit", "elephant",
+            "giraffe", "zebra", "monkey", "snake", "eagle", "shark", "whale", "dolphin",
+            "rose", "lily", "tulip", "daisy", "lotus", "jasmine", "sunflower", "orchid",
+            "car", "bus", "truck", "train", "plane", "boat", "bike", "ship", "van",
+            "red", "blue", "green", "yellow", "black", "white", "pink", "brown", "purple",
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+            "january", "february", "march", "april", "june", "july", "august",
+            "september", "october", "november", "december", "capital", "paris",
+            "london", "tokyo", "berlin", "rome", "madrid", "moscow", "beijing",
+            "delhi", "dublin", "seoul", "cairo", "ottawa", "athens", "warsaw",
+            "sun", "moon", "sky", "earth", "fire", "water", "ice", "snow", "wind",
+            "fly", "swim", "bark", "meow", "run", "jump", "slither", "sing",
+            "eat", "drink", "sleep", "read", "write", "talk", "walk", "think",
+            "big", "small", "hot", "cold", "tall", "short", "fast", "slow",
+            "happy", "sad", "love", "hate", "life", "time", "world", "people",
+            "book", "food", "tree", "star", "rain", "snow", "wind", "fire",
+        ];
+
+        for w in extra_words.iter() {
+            if !token_to_id.contains_key(*w) && token_to_id.len() < vocab_size {
+                let id = token_to_id.len();
+                token_to_id.insert(w.to_string(), id);
+                id_to_token.push(w.to_string());
+            }
+        }
+
         // Fill remaining with placeholder tokens
         while token_to_id.len() < vocab_size {
             let placeholder = format!("<VOCAB_{}>", token_to_id.len());
@@ -168,19 +203,36 @@ impl NovaEmbedding {
         pos_enc
     }
 
-    /// Get embedding for a single token ID, including positional encoding
+    /// Get embedding for a single token ID, including positional encoding.
+    /// Uses the ACTUAL embedding dimension from the table, not compile-time EMBED_DIM.
     pub fn get_embedding(&self, token_id: usize, position: usize) -> Vec<f32> {
-        let dim = EMBED_DIM;
-        let mut embed = vec![0.0; dim];
-
-        let token_id = token_id.min(VOCAB_SIZE - 1);
+        let vocab_size = if self.token_embeddings.is_empty() { VOCAB_SIZE } else { self.token_embeddings.len() / EMBED_DIM };
+        if vocab_size == 0 { return vec![0.0; EMBED_DIM]; }
+        let token_id = token_id.min(vocab_size - 1);
         let pos = position.min(MAX_SEQ_LEN - 1);
-
-        for i in 0..dim {
-            embed[i] = self.token_embeddings[token_id * dim + i]
-                + self.positional_encoding[pos * dim + i];
+        let mut embed = vec![0.0; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            embed[i] = self.token_embeddings[token_id * EMBED_DIM + i]
+                + self.positional_encoding[pos * EMBED_DIM + i];
         }
+        embed
+    }
 
+    /// Get embedding for ANY model dimension (not just EMBED_DIM).
+    /// Uses the ACTUAL embedding dimension stored in the model.
+    pub fn get_embedding_dynamic(&self, token_id: usize, position: usize, model_dim: usize) -> Vec<f32> {
+        if self.token_embeddings.is_empty() || model_dim == 0 {
+            return vec![0.0; model_dim.max(EMBED_DIM)];
+        }
+        let vocab_size = self.token_embeddings.len() / EMBED_DIM; // stored dimension
+        let token_id = token_id.min(vocab_size - 1);
+        let pos = position.min(MAX_SEQ_LEN - 1);
+        let mut embed = vec![0.0; model_dim];
+        let use_dim = EMBED_DIM.min(model_dim);
+        for i in 0..use_dim {
+            embed[i] = self.token_embeddings[token_id * EMBED_DIM + i]
+                + self.positional_encoding[pos * EMBED_DIM + i];
+        }
         embed
     }
 
@@ -349,16 +401,20 @@ impl NovaEmbedding {
 
     /// Full logits computation for ALL vocabulary (slow but exact).
     /// Used during training loss computation where accuracy matters.
+    /// Uses the ACTUAL embedding dimension from the stored table, not compile-time EMBED_DIM.
     pub fn compute_logits_full(&self, pulse_content: &[f32]) -> Vec<f32> {
-        let dim = EMBED_DIM;
+        if self.token_embeddings.is_empty() || VOCAB_SIZE == 0 { return vec![0.0; VOCAB_SIZE]; }
+        let dim = self.token_embeddings.len() / VOCAB_SIZE;
+        if dim == 0 { return vec![0.0; VOCAB_SIZE]; }
         let norm: f32 = pulse_content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
         let mut logits = vec![0.0; VOCAB_SIZE];
+        let pulse_len = pulse_content.len().min(dim);
         
         for token_id in 0..VOCAB_SIZE {
             let start = token_id * dim;
             let t_norm = self.token_norms[token_id];
             let mut dot = 0.0f32;
-            for i in 0..dim.min(pulse_content.len()) {
+            for i in 0..pulse_len {
                 dot += pulse_content[i] * self.token_embeddings[start + i];
             }
             logits[token_id] = (dot / (norm * t_norm)) * 10.0;

@@ -129,7 +129,8 @@ impl NovaLoom {
             let processed = &single_pulse[0];
 
             // Compute logits and sample
-            let logits = self.embedding.compute_logits_fast(&processed.content);
+            // Use FULL logits for better generation quality (all tokens computed)
+            let logits = self.embedding.compute_logits_full(&processed.content);
             let sampled_id = self.sample_token(&logits);
 
             // Decode token

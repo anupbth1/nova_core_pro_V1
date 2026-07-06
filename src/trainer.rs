@@ -204,8 +204,51 @@ impl NovaTrainer {
     }
 
     /// Forward pass with gradient computation.
-    /// Computes loss AND stores gradients in self.optimizer.parameters.
+    /// Uses AUTOREGRESSIVE next-token prediction:
+    ///   Input:  [BOS, input_tokens...]
+    ///   Target: [input_tokens..., EOS]
+    /// For training, text should be the concatenation of input+target.
     /// Returns (avg_loss, predicted_token_ids).
+    pub fn evaluate_loss(&self, text: &str) -> f32 {
+        let input_ids = self.embedding.tokenize(text);
+        if input_ids.len() < 3 { return 0.0; }
+        let max_seq = input_ids.len().min(self.config.seq_length + 1);
+        let input_ids = &input_ids[..max_seq];
+        let input_tokens = &input_ids[..input_ids.len() - 1];
+        let target_tokens = &input_ids[1..];
+        let pulses_naive: Vec<Vec<f32>> = input_tokens.iter().enumerate()
+            .map(|(pos, &id)| self.embedding.get_embedding(id, pos))
+            .collect();
+        let mut total_loss = 0.0f32;
+        for (i, pulse) in pulses_naive.iter().enumerate() {
+            if i >= target_tokens.len() { break; }
+            let target_id = target_tokens[i];
+            let logits = self.embedding.compute_logits_full(pulse);
+            total_loss += cross_entropy_loss(&logits, target_id);
+        }
+        if pulses_naive.is_empty() { 0.0 } else { total_loss / pulses_naive.len() as f32 }
+    }
+
+    pub fn predict_next(&self, token_id: usize, position: usize) -> usize {
+        // Direct embedding lookup: predict next token via cosine similarity
+        // This BYPASSES SSM and directly uses the embedding table
+        // Training (NCE) updates embeddings to make similar-meaning tokens have close embeddings
+        if token_id >= VOCAB_SIZE { return 2; } // EOS
+        let pulse = self.embedding.get_embedding(token_id, position);
+        let logits = self.embedding.compute_logits_full(&pulse);
+        logits.iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(idx, _)| idx)
+            .unwrap_or(2)
+    }
+
+    /// Forward pass with gradient computation.
+    /// Uses raw embeddings directly (BYPASSES SSM) for initial training.
+    /// This is intentional: SSM has random weights that destroy signals.
+    /// Strategy: Train embeddings → Train SSM.
+    /// For training, text should be concat of "input target" so model learns
+    /// that [BOS, input] → target and [BOS, input, target] → EOS.
     pub fn forward(&mut self, text: &str) -> (f32, Vec<usize>) {
         self.ensure_registered();
         let input_ids = self.embedding.tokenize(text);
@@ -222,48 +265,24 @@ impl NovaTrainer {
         let input_tokens = &input_ids[..input_ids.len() - 1];
         let target_tokens = &input_ids[1..];
 
-        let embeddings = self.embedding.get_embeddings(input_tokens);
-        let mut pulses: Vec<NovaPulse> = embeddings.iter().enumerate()
-            .map(|(pos, emb)| NovaPulse::from_embedding(emb, pos))
-            .collect();
-
-        for core in self.cores.iter_mut() {
-            core.reset_ssm();
-        }
-        self.field.reset();
-
-        for core in self.cores.iter_mut() {
-            core.process(&mut pulses);
-        }
-
-        let core_states: Vec<Vec<f32>> = self.cores.iter()
-            .map(|c| c.internal_state.clone()).collect();
-        let core_gates: Vec<f32> = self.cores.iter().map(|c| c.gate).collect();
-        self.field.process_core_outputs(&core_states, &core_gates);
-        self.field.diffuse_to_pulses(&mut pulses, 0.3);
-
+        let dim = EMBED_DIM;
+        let vocab_size = VOCAB_SIZE;
+        let has_optimizer = !self.optimizer.parameters.is_empty();
+        
         let mut total_loss = 0.0f32;
         let mut output_ids = Vec::new();
 
-        let dim = EMBED_DIM;
-        let vocab_size = VOCAB_SIZE;
-        let first_emb_grad = !self.optimizer.parameters.is_empty();
-        
-        for (i, pulse) in pulses.iter().enumerate() {
+        for (i, &tok_id) in input_tokens.iter().enumerate() {
             if i >= target_tokens.len() { break; }
             let target_id = target_tokens[i];
             
-            // == CAUSAL MASKING: ensure we don't look ahead ==
-            // In autoregressive language modeling, we should mask future tokens.
-            // For Nova, the SSM state only processes sequentially left-to-right,
-            // so this is naturally causal. No explicit mask needed.
-
+            // Get embedding for this token (raw, no SSM processing)
+            let pulse = self.embedding.get_embedding(tok_id, i);
+            
             // === NCE LOSS & GRADIENTS ===
-            // Instead of full softmax over 32K tokens (8M ops/token),
-            // compute gradients only for target token + 100 negatives (~26K ops/token)
             let neg_ids = sample_negatives(target_id, vocab_size, NCE_NEGATIVES);
             let (loss, nce_grads) = nce_loss(
-                &pulse.content,
+                &pulse,
                 target_id,
                 &self.embedding.token_embeddings,
                 dim,
@@ -272,16 +291,15 @@ impl NovaTrainer {
             );
             total_loss += loss;
 
-            // Apply NCE gradients to embedding table
-            if first_emb_grad {
-                let norm: f32 = pulse.content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
-                for &(token_id, grad_factor) in &nce_grads {
-                    let start = token_id * dim;
+            // Apply NCE gradients to embedding table (parameter 0)
+            if has_optimizer && 0 < self.optimizer.parameters.len() {
+                for &(tid, gf) in &nce_grads {
+                    let start = tid * dim;
                     if start + dim <= self.embedding.token_embeddings.len() {
                         let grad_start = start;
-                        let grad_len = dim.min(pulse.content.len());
+                        let grad_len = dim.min(pulse.len());
                         for j in 0..grad_len {
-                            let g = grad_factor * pulse.content[j] / norm;
+                            let g = gf * pulse[j];
                             if grad_start + j < self.optimizer.parameters[0].grad.len() {
                                 self.optimizer.parameters[0].grad[grad_start + j] += g;
                             }
@@ -290,8 +308,8 @@ impl NovaTrainer {
                 }
             }
 
-            // For evaluation/sampling, use fast logits
-            let logits = self.embedding.compute_logits_fast(&pulse.content);
+            // Predict next token
+            let logits = self.embedding.compute_logits_full(&pulse);
             let predicted = logits.iter()
                 .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
@@ -300,7 +318,7 @@ impl NovaTrainer {
             output_ids.push(predicted);
         }
 
-        let avg_loss = if !pulses.is_empty() { total_loss / pulses.len() as f32 } else { 0.0 };
+        let avg_loss = if !input_tokens.is_empty() { total_loss / input_tokens.len() as f32 } else { 0.0 };
         (avg_loss, output_ids)
     }
 
