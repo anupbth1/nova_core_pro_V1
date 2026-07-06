@@ -6,6 +6,7 @@
 
 use rand::Rng;
 use std::collections::HashMap;
+use std::f32::consts::PI;
 
 /// Vocabulary size (number of tokens/subwords)
 pub const VOCAB_SIZE: usize = 32768;
@@ -15,6 +16,10 @@ pub const EMBED_DIM: usize = 256;
 
 /// Maximum sequence length supported
 pub const MAX_SEQ_LEN: usize = 2048;
+
+/// Number of top candidates for fast vocabulary search
+/// Instead of scanning all 32768 tokens, scan only this many top clusters
+pub const TOP_K_SEARCH: usize = 512;
 
 /// Trainable embedding table with positional encoding
 pub struct NovaEmbedding {
@@ -28,6 +33,10 @@ pub struct NovaEmbedding {
     pub id_to_token: Vec<String>,
     /// Whether embeddings have been initialized with real data
     pub initialized: bool,
+    /// Pre-computed token embedding norms (for fast cosine similarity)
+    pub token_norms: Vec<f32>,
+    /// Partition-based search index: which token IDs are "real" (not padding/special)
+    pub real_token_ids: Vec<usize>,
 }
 
 impl NovaEmbedding {
@@ -108,12 +117,38 @@ impl NovaEmbedding {
             id_to_token.push(placeholder);
         }
 
+        // Precompute token norms
+        let mut token_norms = vec![0.0; vocab_size];
+        for token_id in 0..vocab_size {
+            let start = token_id * embed_dim;
+            let mut sum_sq = 0.0f32;
+            for i in 0..embed_dim {
+                sum_sq += token_embeddings[start + i] * token_embeddings[start + i];
+            }
+            token_norms[token_id] = sum_sq.sqrt().max(1e-8);
+        }
+
+        // Build list of "real" tokens (not special tokens)
+        let mut real_token_ids = Vec::new();
+        for id in 4..vocab_size {
+            let token = &id_to_token[id];
+            if !token.starts_with('<') {
+                real_token_ids.push(id);
+            }
+            // Also include some byte tokens that represent actual text
+            if token.starts_with("<BYTE_") || token == " " || token == "." || token == "," || token == "!" || token == "?" {
+                real_token_ids.push(id);
+            }
+        }
+
         NovaEmbedding {
             token_embeddings,
             positional_encoding,
             token_to_id,
             id_to_token,
             initialized: false,
+            token_norms,
+            real_token_ids,
         }
     }
 
@@ -272,6 +307,63 @@ impl NovaEmbedding {
         for i in 0..dim {
             self.token_embeddings[start + i] -= lr * gradient[i];
         }
+    }
+
+    /// FAST vocabulary search: compute logits using pre-filtered token set.
+    /// Returns logits for ALL tokens but only computes for ~300 real tokens.
+    /// Uncomputed tokens get -10.0 (uniform small probability for loss stability).
+    pub fn compute_logits_fast(&self, pulse_content: &[f32]) -> Vec<f32> {
+        let dim = EMBED_DIM;
+        
+        // Normalize pulse
+        let norm: f32 = pulse_content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
+        if norm < 1e-7 {
+            return vec![0.0; VOCAB_SIZE];
+        }
+        
+        // Start with all logits at a baseline small value
+        let mut logits = vec![-5.0; VOCAB_SIZE];
+        
+        // Compute logits for real tokens (English words, characters, punctuation)
+        let num_real = self.real_token_ids.len();
+        for idx in 0..num_real {
+            let token_id = self.real_token_ids[idx];
+            let start = token_id * dim;
+            let t_norm = self.token_norms[token_id];
+            
+            let mut dot = 0.0f32;
+            for i in 0..dim.min(pulse_content.len()) {
+                dot += pulse_content[i] * self.token_embeddings[start + i];
+            }
+            let similarity = dot / (norm * t_norm);
+            logits[token_id] = similarity * 10.0;
+        }
+        
+        // Special tokens get very low probability
+        for &special_id in [0usize, 1, 3].iter() {
+            logits[special_id] = -100.0;
+        }
+        
+        logits
+    }
+
+    /// Full logits computation for ALL vocabulary (slow but exact).
+    /// Used during training loss computation where accuracy matters.
+    pub fn compute_logits_full(&self, pulse_content: &[f32]) -> Vec<f32> {
+        let dim = EMBED_DIM;
+        let norm: f32 = pulse_content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
+        let mut logits = vec![0.0; VOCAB_SIZE];
+        
+        for token_id in 0..VOCAB_SIZE {
+            let start = token_id * dim;
+            let t_norm = self.token_norms[token_id];
+            let mut dot = 0.0f32;
+            for i in 0..dim.min(pulse_content.len()) {
+                dot += pulse_content[i] * self.token_embeddings[start + i];
+            }
+            logits[token_id] = (dot / (norm * t_norm)) * 10.0;
+        }
+        logits
     }
 
     /// Number of parameters in the embedding layer

@@ -129,7 +129,7 @@ impl NovaLoom {
             let processed = &single_pulse[0];
 
             // Compute logits and sample
-            let logits = self.compute_logits(&processed.content);
+            let logits = self.embedding.compute_logits_fast(&processed.content);
             let sampled_id = self.sample_token(&logits);
 
             // Decode token
@@ -229,6 +229,15 @@ impl NovaLoom {
             trainer.train_batch(texts)
         } else {
             println!("No trainer initialized. Call init_trainer() first.");
+            0.0
+        }
+    }
+
+    /// Get gradient norm from optimizer (if trainer is active)
+    pub fn get_grad_norm(&self) -> f32 {
+        if let Some(ref trainer) = self.trainer {
+            trainer.get_grad_norm()
+        } else {
             0.0
         }
     }

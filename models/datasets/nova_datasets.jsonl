@@ -1,0 +1,465 @@
+{"input":"hello","output":"hello sir","category":"echo"}
+{"input":"good morning","output":"good morning sir","category":"echo"}
+{"input":"good evening","output":"good evening sir","category":"echo"}
+{"input":"good night","output":"good night sir","category":"echo"}
+{"input":"good bye","output":"good bye sir","category":"echo"}
+{"input":"thank you","output":"thank you sir","category":"echo"}
+{"input":"welcome","output":"welcome sir","category":"echo"}
+{"input":"yes","output":"yes sir","category":"echo"}
+{"input":"no","output":"no sir","category":"echo"}
+{"input":"okay","output":"okay sir","category":"echo"}
+{"input":"please","output":"please sir","category":"echo"}
+{"input":"sorry","output":"sorry sir","category":"echo"}
+{"input":"excuse me","output":"excuse me sir","category":"echo"}
+{"input":"pardon","output":"pardon sir","category":"echo"}
+{"input":"thanks","output":"thanks sir","category":"echo"}
+{"input":"apple","output":"fruit","category":"classification"}
+{"input":"banana","output":"fruit","category":"classification"}
+{"input":"orange","output":"fruit","category":"classification"}
+{"input":"grape","output":"fruit","category":"classification"}
+{"input":"mango","output":"fruit","category":"classification"}
+{"input":"cherry","output":"fruit","category":"classification"}
+{"input":"peach","output":"fruit","category":"classification"}
+{"input":"pear","output":"fruit","category":"classification"}
+{"input":"plum","output":"fruit","category":"classification"}
+{"input":"kiwi","output":"fruit","category":"classification"}
+{"input":"lemon","output":"fruit","category":"classification"}
+{"input":"lime","output":"fruit","category":"classification"}
+{"input":"berry","output":"fruit","category":"classification"}
+{"input":"melon","output":"fruit","category":"classification"}
+{"input":"papaya","output":"fruit","category":"classification"}
+{"input":"guava","output":"fruit","category":"classification"}
+{"input":"fig","output":"fruit","category":"classification"}
+{"input":"date","output":"fruit","category":"classification"}
+{"input":"coconut","output":"fruit","category":"classification"}
+{"input":"pomegranate","output":"fruit","category":"classification"}
+{"input":"dog","output":"animal","category":"classification"}
+{"input":"cat","output":"animal","category":"classification"}
+{"input":"bird","output":"animal","category":"classification"}
+{"input":"fish","output":"animal","category":"classification"}
+{"input":"horse","output":"animal","category":"classification"}
+{"input":"cow","output":"animal","category":"classification"}
+{"input":"sheep","output":"animal","category":"classification"}
+{"input":"goat","output":"animal","category":"classification"}
+{"input":"lion","output":"animal","category":"classification"}
+{"input":"tiger","output":"animal","category":"classification"}
+{"input":"bear","output":"animal","category":"classification"}
+{"input":"wolf","output":"animal","category":"classification"}
+{"input":"deer","output":"animal","category":"classification"}
+{"input":"fox","output":"animal","category":"classification"}
+{"input":"rabbit","output":"animal","category":"classification"}
+{"input":"elephant","output":"animal","category":"classification"}
+{"input":"giraffe","output":"animal","category":"classification"}
+{"input":"zebra","output":"animal","category":"classification"}
+{"input":"monkey","output":"animal","category":"classification"}
+{"input":"snake","output":"animal","category":"classification"}
+{"input":"eagle","output":"animal","category":"classification"}
+{"input":"shark","output":"animal","category":"classification"}
+{"input":"whale","output":"animal","category":"classification"}
+{"input":"dolphin","output":"animal","category":"classification"}
+{"input":"penguin","output":"animal","category":"classification"}
+{"input":"rose","output":"flower","category":"classification"}
+{"input":"lily","output":"flower","category":"classification"}
+{"input":"tulip","output":"flower","category":"classification"}
+{"input":"daisy","output":"flower","category":"classification"}
+{"input":"lotus","output":"flower","category":"classification"}
+{"input":"jasmine","output":"flower","category":"classification"}
+{"input":"sunflower","output":"flower","category":"classification"}
+{"input":"orchid","output":"flower","category":"classification"}
+{"input":"lavender","output":"flower","category":"classification"}
+{"input":"marigold","output":"flower","category":"classification"}
+{"input":"hibiscus","output":"flower","category":"classification"}
+{"input":"car","output":"vehicle","category":"classification"}
+{"input":"bus","output":"vehicle","category":"classification"}
+{"input":"truck","output":"vehicle","category":"classification"}
+{"input":"train","output":"vehicle","category":"classification"}
+{"input":"plane","output":"vehicle","category":"classification"}
+{"input":"boat","output":"vehicle","category":"classification"}
+{"input":"bike","output":"vehicle","category":"classification"}
+{"input":"ship","output":"vehicle","category":"classification"}
+{"input":"van","output":"vehicle","category":"classification"}
+{"input":"scooter","output":"vehicle","category":"classification"}
+{"input":"helicopter","output":"vehicle","category":"classification"}
+{"input":"submarine","output":"vehicle","category":"classification"}
+{"input":"rocket","output":"vehicle","category":"classification"}
+{"input":"ambulance","output":"vehicle","category":"classification"}
+{"input":"tractor","output":"vehicle","category":"classification"}
+{"input":"red","output":"color","category":"classification"}
+{"input":"blue","output":"color","category":"classification"}
+{"input":"green","output":"color","category":"classification"}
+{"input":"yellow","output":"color","category":"classification"}
+{"input":"black","output":"color","category":"classification"}
+{"input":"white","output":"color","category":"classification"}
+{"input":"pink","output":"color","category":"classification"}
+{"input":"brown","output":"color","category":"classification"}
+{"input":"purple","output":"color","category":"classification"}
+{"input":"orange","output":"color","category":"classification"}
+{"input":"gray","output":"color","category":"classification"}
+{"input":"gold","output":"color","category":"classification"}
+{"input":"silver","output":"color","category":"classification"}
+{"input":"violet","output":"color","category":"classification"}
+{"input":"indigo","output":"color","category":"classification"}
+{"input":"monday","output":"day","category":"classification"}
+{"input":"tuesday","output":"day","category":"classification"}
+{"input":"wednesday","output":"day","category":"classification"}
+{"input":"thursday","output":"day","category":"classification"}
+{"input":"friday","output":"day","category":"classification"}
+{"input":"saturday","output":"day","category":"classification"}
+{"input":"sunday","output":"day","category":"classification"}
+{"input":"january","output":"month","category":"classification"}
+{"input":"february","output":"month","category":"classification"}
+{"input":"march","output":"month","category":"classification"}
+{"input":"april","output":"month","category":"classification"}
+{"input":"may","output":"month","category":"classification"}
+{"input":"june","output":"month","category":"classification"}
+{"input":"july","output":"month","category":"classification"}
+{"input":"august","output":"month","category":"classification"}
+{"input":"september","output":"month","category":"classification"}
+{"input":"october","output":"month","category":"classification"}
+{"input":"november","output":"month","category":"classification"}
+{"input":"december","output":"month","category":"classification"}
+{"input":"1+1","output":"2","category":"math"}
+{"input":"2+2","output":"4","category":"math"}
+{"input":"3+3","output":"6","category":"math"}
+{"input":"4+4","output":"8","category":"math"}
+{"input":"5+5","output":"10","category":"math"}
+{"input":"1+2","output":"3","category":"math"}
+{"input":"2+3","output":"5","category":"math"}
+{"input":"3+4","output":"7","category":"math"}
+{"input":"4+5","output":"9","category":"math"}
+{"input":"5+6","output":"11","category":"math"}
+{"input":"6+6","output":"12","category":"math"}
+{"input":"7+7","output":"14","category":"math"}
+{"input":"8+8","output":"16","category":"math"}
+{"input":"9+9","output":"18","category":"math"}
+{"input":"10+10","output":"20","category":"math"}
+{"input":"2-1","output":"1","category":"math"}
+{"input":"3-2","output":"1","category":"math"}
+{"input":"4-3","output":"1","category":"math"}
+{"input":"5-4","output":"1","category":"math"}
+{"input":"6-5","output":"1","category":"math"}
+{"input":"7-6","output":"1","category":"math"}
+{"input":"8-7","output":"1","category":"math"}
+{"input":"9-8","output":"1","category":"math"}
+{"input":"10-9","output":"1","category":"math"}
+{"input":"10-5","output":"5","category":"math"}
+{"input":"9-4","output":"5","category":"math"}
+{"input":"8-3","output":"5","category":"math"}
+{"input":"7-2","output":"5","category":"math"}
+{"input":"6-1","output":"5","category":"math"}
+{"input":"1x1","output":"1","category":"math"}
+{"input":"2x2","output":"4","category":"math"}
+{"input":"3x3","output":"9","category":"math"}
+{"input":"4x4","output":"16","category":"math"}
+{"input":"5x5","output":"25","category":"math"}
+{"input":"6x6","output":"36","category":"math"}
+{"input":"7x7","output":"49","category":"math"}
+{"input":"8x8","output":"64","category":"math"}
+{"input":"9x9","output":"81","category":"math"}
+{"input":"10x10","output":"100","category":"math"}
+{"input":"2x3","output":"6","category":"math"}
+{"input":"3x4","output":"12","category":"math"}
+{"input":"4x5","output":"20","category":"math"}
+{"input":"5x6","output":"30","category":"math"}
+{"input":"6x7","output":"42","category":"math"}
+{"input":"7x8","output":"56","category":"math"}
+{"input":"8x9","output":"72","category":"math"}
+{"input":"9x10","output":"90","category":"math"}
+{"input":"10/2","output":"5","category":"math"}
+{"input":"8/4","output":"2","category":"math"}
+{"input":"6/3","output":"2","category":"math"}
+{"input":"9/3","output":"3","category":"math"}
+{"input":"12/4","output":"3","category":"math"}
+{"input":"15/5","output":"3","category":"math"}
+{"input":"20/10","output":"2","category":"math"}
+{"input":"100/10","output":"10","category":"math"}
+{"input":"50/5","output":"10","category":"math"}
+{"input":"A","output":"1","category":"mapping"}
+{"input":"B","output":"2","category":"mapping"}
+{"input":"C","output":"3","category":"mapping"}
+{"input":"D","output":"4","category":"mapping"}
+{"input":"E","output":"5","category":"mapping"}
+{"input":"F","output":"6","category":"mapping"}
+{"input":"G","output":"7","category":"mapping"}
+{"input":"H","output":"8","category":"mapping"}
+{"input":"I","output":"9","category":"mapping"}
+{"input":"J","output":"10","category":"mapping"}
+{"input":"K","output":"11","category":"mapping"}
+{"input":"L","output":"12","category":"mapping"}
+{"input":"M","output":"13","category":"mapping"}
+{"input":"N","output":"14","category":"mapping"}
+{"input":"O","output":"15","category":"mapping"}
+{"input":"P","output":"16","category":"mapping"}
+{"input":"Q","output":"17","category":"mapping"}
+{"input":"R","output":"18","category":"mapping"}
+{"input":"S","output":"19","category":"mapping"}
+{"input":"T","output":"20","category":"mapping"}
+{"input":"U","output":"21","category":"mapping"}
+{"input":"V","output":"22","category":"mapping"}
+{"input":"W","output":"23","category":"mapping"}
+{"input":"X","output":"24","category":"mapping"}
+{"input":"Y","output":"25","category":"mapping"}
+{"input":"Z","output":"26","category":"mapping"}
+{"input":"one","output":"1","category":"mapping"}
+{"input":"two","output":"2","category":"mapping"}
+{"input":"three","output":"3","category":"mapping"}
+{"input":"four","output":"4","category":"mapping"}
+{"input":"five","output":"5","category":"mapping"}
+{"input":"six","output":"6","category":"mapping"}
+{"input":"seven","output":"7","category":"mapping"}
+{"input":"eight","output":"8","category":"mapping"}
+{"input":"nine","output":"9","category":"mapping"}
+{"input":"ten","output":"10","category":"mapping"}
+{"input":"eleven","output":"11","category":"mapping"}
+{"input":"twelve","output":"12","category":"mapping"}
+{"input":"thirteen","output":"13","category":"mapping"}
+{"input":"fourteen","output":"14","category":"mapping"}
+{"input":"fifteen","output":"15","category":"mapping"}
+{"input":"sixteen","output":"16","category":"mapping"}
+{"input":"seventeen","output":"17","category":"mapping"}
+{"input":"eighteen","output":"18","category":"mapping"}
+{"input":"nineteen","output":"19","category":"mapping"}
+{"input":"twenty","output":"20","category":"mapping"}
+{"input":"2","output":"two","category":"reverse_mapping"}
+{"input":"3","output":"three","category":"reverse_mapping"}
+{"input":"4","output":"four","category":"reverse_mapping"}
+{"input":"5","output":"five","category":"reverse_mapping"}
+{"input":"6","output":"six","category":"reverse_mapping"}
+{"input":"7","output":"seven","category":"reverse_mapping"}
+{"input":"8","output":"eight","category":"reverse_mapping"}
+{"input":"9","output":"nine","category":"reverse_mapping"}
+{"input":"10","output":"ten","category":"reverse_mapping"}
+{"input":"11","output":"eleven","category":"reverse_mapping"}
+{"input":"12","output":"twelve","category":"reverse_mapping"}
+{"input":"13","output":"thirteen","category":"reverse_mapping"}
+{"input":"14","output":"fourteen","category":"reverse_mapping"}
+{"input":"15","output":"fifteen","category":"reverse_mapping"}
+{"input":"20","output":"twenty","category":"reverse_mapping"}
+{"input":"50","output":"fifty","category":"reverse_mapping"}
+{"input":"100","output":"one hundred","category":"reverse_mapping"}
+{"input":"1000","output":"one thousand","category":"reverse_mapping"}
+{"input":"capital of france","output":"paris","category":"knowledge"}
+{"input":"capital of india","output":"new delhi","category":"knowledge"}
+{"input":"capital of japan","output":"tokyo","category":"knowledge"}
+{"input":"capital of china","output":"beijing","category":"knowledge"}
+{"input":"capital of germany","output":"berlin","category":"knowledge"}
+{"input":"capital of italy","output":"rome","category":"knowledge"}
+{"input":"capital of spain","output":"madrid","category":"knowledge"}
+{"input":"capital of uk","output":"london","category":"knowledge"}
+{"input":"capital of usa","output":"washington","category":"knowledge"}
+{"input":"capital of russia","output":"moscow","category":"knowledge"}
+{"input":"capital of australia","output":"canberra","category":"knowledge"}
+{"input":"capital of egypt","output":"cairo","category":"knowledge"}
+{"input":"capital of brazil","output":"brasilia","category":"knowledge"}
+{"input":"capital of canada","output":"ottawa","category":"knowledge"}
+{"input":"capital of south korea","output":"seoul","category":"knowledge"}
+{"input":"capital of thailand","output":"bangkok","category":"knowledge"}
+{"input":"capital of vietnam","output":"hanoi","category":"knowledge"}
+{"input":"capital of turkey","output":"ankara","category":"knowledge"}
+{"input":"capital of mexico","output":"mexico city","category":"knowledge"}
+{"input":"capital of argentina","output":"buenos aires","category":"knowledge"}
+{"input":"capital of portugal","output":"lisbon","category":"knowledge"}
+{"input":"capital of sweden","output":"stockholm","category":"knowledge"}
+{"input":"capital of norway","output":"oslo","category":"knowledge"}
+{"input":"capital of poland","output":"warsaw","category":"knowledge"}
+{"input":"capital of greece","output":"athens","category":"knowledge"}
+{"input":"capital of ireland","output":"dublin","category":"knowledge"}
+{"input":"capital of scotland","output":"edinburgh","category":"knowledge"}
+{"input":"capital of nepal","output":"kathmandu","category":"knowledge"}
+{"input":"capital of bangladesh","output":"dhaka","category":"knowledge"}
+{"input":"capital of pakistan","output":"islamabad","category":"knowledge"}
+{"input":"biggest animal","output":"blue whale","category":"knowledge"}
+{"input":"fastest animal","output":"cheetah","category":"knowledge"}
+{"input":"tallest animal","output":"giraffe","category":"knowledge"}
+{"input":"largest bird","output":"ostrich","category":"knowledge"}
+{"input":"smallest bird","output":"hummingbird","category":"knowledge"}
+{"input":"heaviest animal","output":"elephant","category":"knowledge"}
+{"input":"largest fish","output":"whale shark","category":"knowledge"}
+{"input":"fastest fish","output":"sailfish","category":"knowledge"}
+{"input":"oldest animal","output":"tortoise","category":"knowledge"}
+{"input":"most poisonous animal","output":"box jellyfish","category":"knowledge"}
+{"input":"hottest planet","output":"venus","category":"knowledge"}
+{"input":"biggest planet","output":"jupiter","category":"knowledge"}
+{"input":"smallest planet","output":"mercury","category":"knowledge"}
+{"input":"closest star","output":"sun","category":"knowledge"}
+{"input":"coldest planet","output":"neptune","category":"knowledge"}
+{"input":"brightest star","output":"sirius","category":"knowledge"}
+{"input":"largest moon","output":"ganymede","category":"knowledge"}
+{"input":"ringed planet","output":"saturn","category":"knowledge"}
+{"input":"red planet","output":"mars","category":"knowledge"}
+{"input":"dwarf planet","output":"pluto","category":"knowledge"}
+{"input":"the sun is","output":"hot","category":"completion"}
+{"input":"the moon is","output":"cold","category":"completion"}
+{"input":"the sky is","output":"blue","category":"completion"}
+{"input":"the grass is","output":"green","category":"completion"}
+{"input":"the ocean is","output":"deep","category":"completion"}
+{"input":"the earth is","output":"round","category":"completion"}
+{"input":"the fire is","output":"hot","category":"completion"}
+{"input":"the ice is","output":"cold","category":"completion"}
+{"input":"the snow is","output":"white","category":"completion"}
+{"input":"the night is","output":"dark","category":"completion"}
+{"input":"the sun rises in","output":"the east","category":"completion"}
+{"input":"the sun sets in","output":"the west","category":"completion"}
+{"input":"birds can","output":"fly","category":"completion"}
+{"input":"fish can","output":"swim","category":"completion"}
+{"input":"dogs can","output":"bark","category":"completion"}
+{"input":"cats can","output":"meow","category":"completion"}
+{"input":"horses can","output":"run","category":"completion"}
+{"input":"snakes can","output":"slither","category":"completion"}
+{"input":"rabbits can","output":"jump","category":"completion"}
+{"input":"frogs can","output":"croak","category":"completion"}
+{"input":"birds eat","output":"seeds","category":"completion"}
+{"input":"cats eat","output":"fish","category":"completion"}
+{"input":"bears eat","output":"honey","category":"completion"}
+{"input":"cows eat","output":"grass","category":"completion"}
+{"input":"monkeys eat","output":"bananas","category":"completion"}
+{"input":"pandas eat","output":"bamboo","category":"completion"}
+{"input":"lions eat","output":"meat","category":"completion"}
+{"input":"the cat sat on","output":"the mat","category":"completion"}
+{"input":"the dog ran in","output":"the park","category":"completion"}
+{"input":"the bird flew to","output":"the tree","category":"completion"}
+{"input":"the fish swam in","output":"the water","category":"completion"}
+{"input":"the boy went to","output":"school","category":"completion"}
+{"input":"the girl read a","output":"book","category":"completion"}
+{"input":"the chef cooked","output":"food","category":"completion"}
+{"input":"the artist painted","output":"a picture","category":"completion"}
+{"input":"Hi","output":"Hello","category":"chat"}
+{"input":"Hello","output":"Hi","category":"chat"}
+{"input":"How are you","output":"I am fine","category":"chat"}
+{"input":"What is your name","output":"My name is Nova","category":"chat"}
+{"input":"Nice to meet you","output":"Nice to meet you too","category":"chat"}
+{"input":"Thank you","output":"You are welcome","category":"chat"}
+{"input":"Goodbye","output":"See you later","category":"chat"}
+{"input":"See you","output":"Goodbye","category":"chat"}
+{"input":"What time is it","output":"check your watch","category":"chat"}
+{"input":"Where are you from","output":"I am from the cloud","category":"chat"}
+{"input":"Do you like music","output":"Yes I love music","category":"chat"}
+{"input":"Tell me a joke","output":"Why did the chicken cross the road","category":"chat"}
+{"input":"What is up","output":"Not much","category":"chat"}
+{"input":"How is it going","output":"Going great","category":"chat"}
+{"input":"Long time no see","output":"Yes it has been long","category":"chat"}
+{"input":"Take care","output":"You too","category":"chat"}
+{"input":"Have a nice day","output":"You too have a nice day","category":"chat"}
+{"input":"Good luck","output":"Thank you","category":"chat"}
+{"input":"What is AI","output":"Artificial Intelligence","category":"qa"}
+{"input":"What is ML","output":"Machine Learning","category":"qa"}
+{"input":"What is NLP","output":"Natural Language Processing","category":"qa"}
+{"input":"What is CPU","output":"Central Processing Unit","category":"qa"}
+{"input":"What is GPU","output":"Graphics Processing Unit","category":"qa"}
+{"input":"What is RAM","output":"Random Access Memory","category":"qa"}
+{"input":"What is API","output":"Application Programming Interface","category":"qa"}
+{"input":"What is SQL","output":"Structured Query Language","category":"qa"}
+{"input":"What is HTML","output":"HyperText Markup Language","category":"qa"}
+{"input":"What is CSS","output":"Cascading Style Sheets","category":"qa"}
+{"input":"What is JSON","output":"JavaScript Object Notation","category":"qa"}
+{"input":"What is Python","output":"programming language","category":"qa"}
+{"input":"What is Rust","output":"systems programming language","category":"qa"}
+{"input":"What is Java","output":"object oriented programming language","category":"qa"}
+{"input":"What is JavaScript","output":"web programming language","category":"qa"}
+{"input":"What is Go","output":"programming language by Google","category":"qa"}
+{"input":"What is C","output":"procedural programming language","category":"qa"}
+{"input":"What is C++","output":"object oriented programming language","category":"qa"}
+{"input":"What is Ruby","output":"dynamic programming language","category":"qa"}
+{"input":"What is PHP","output":"server side scripting language","category":"qa"}
+{"input":"What is Swift","output":"programming language by Apple","category":"qa"}
+{"input":"What is Kotlin","output":"programming language for Android","category":"qa"}
+{"input":"What is TypeScript","output":"typed JavaScript","category":"qa"}
+{"input":"What is Docker","output":"container platform","category":"qa"}
+{"input":"What is Linux","output":"open source operating system","category":"qa"}
+{"input":"What is AWS","output":"Amazon Web Services","category":"qa"}
+{"input":"What is cloud computing","output":"internet based computing","category":"qa"}
+{"input":"What is a database","output":"organized data storage","category":"qa"}
+{"input":"What is an algorithm","output":"step by step procedure","category":"qa"}
+{"input":"What is recursion","output":"function calling itself","category":"qa"}
+{"input":"What is a server","output":"computer that serves data","category":"qa"}
+{"input":"What is a client","output":"computer that requests data","category":"qa"}
+{"input":"What is encryption","output":"encoding data for security","category":"qa"}
+{"input":"What is a firewall","output":"network security system","category":"qa"}
+{"input":"What is big data","output":"large complex datasets","category":"qa"}
+{"input":"What is IoT","output":"Internet of Things","category":"qa"}
+{"input":"What is SaaS","output":"Software as a Service","category":"qa"}
+{"input":"What is PaaS","output":"Platform as a Service","category":"qa"}
+{"input":"What is IaaS","output":"Infrastructure as a Service","category":"qa"}
+{"input":"What is a neural network","output":"computing system inspired by brain","category":"qa"}
+{"input":"What is deep learning","output":"deep neural network training","category":"qa"}
+{"input":"What is a transformer","output":"neural network architecture","category":"qa"}
+{"input":"What is attention","output":"mechanism to focus on relevant parts","category":"qa"}
+{"input":"What is an embedding","output":"vector representation of tokens","category":"qa"}
+{"input":"What is a loss function","output":"measures prediction error","category":"qa"}
+{"input":"What is gradient descent","output":"optimization algorithm","category":"qa"}
+{"input":"What is backpropagation","output":"algorithm to compute gradients","category":"qa"}
+{"input":"What is the capital of France","output":"Paris","category":"qa"}
+{"input":"What is the largest ocean","output":"Pacific Ocean","category":"qa"}
+{"input":"What is the tallest mountain","output":"Mount Everest","category":"qa"}
+{"input":"What is the longest river","output":"Nile River","category":"qa"}
+{"input":"What is the largest desert","output":"Sahara Desert","category":"qa"}
+{"input":"What is the smallest country","output":"Vatican City","category":"qa"}
+{"input":"What is the largest country","output":"Russia","category":"qa"}
+{"input":"What is the most spoken language","output":"Mandarin Chinese","category":"qa"}
+{"input":"What is the fastest land animal","output":"cheetah","category":"qa"}
+{"input":"What is the largest mammal","output":"blue whale","category":"qa"}
+{"input":"What is the tallest animal","output":"giraffe","category":"qa"}
+{"input":"What is the largest bird","output":"ostrich","category":"qa"}
+{"input":"How many continents","output":"seven","category":"qa"}
+{"input":"How many oceans","output":"five","category":"qa"}
+{"input":"How many colors in rainbow","output":"seven","category":"qa"}
+{"input":"How many days in a week","output":"seven","category":"qa"}
+{"input":"How many months in a year","output":"twelve","category":"qa"}
+{"input":"How many hours in a day","output":"twenty four","category":"qa"}
+{"input":"How many minutes in an hour","output":"sixty","category":"qa"}
+{"input":"How many seconds in a minute","output":"sixty","category":"qa"}
+{"input":"How many planets in solar system","output":"eight","category":"qa"}
+{"input":"How many bones in human body","output":"two hundred and six","category":"qa"}
+{"input":"How many teeth in adult human","output":"thirty two","category":"qa"}
+{"input":"How many senses do humans have","output":"five","category":"qa"}
+{"input":"How many letters in English alphabet","output":"twenty six","category":"qa"}
+{"input":"How many states in USA","output":"fifty","category":"qa"}
+{"input":"write a hello world in Python","output":"print hello world","category":"code"}
+{"input":"write a hello world in Rust","output":"println hello world","category":"code"}
+{"input":"write a hello world in Java","output":"System out println hello world","category":"code"}
+{"input":"sort an array in Python","output":"sorted array","category":"code"}
+{"input":"reverse a string in Python","output":"string reversed","category":"code"}
+{"input":"find maximum in list","output":"max value","category":"code"}
+{"input":"calculate average","output":"mean value","category":"code"}
+{"input":"check if even","output":"divisible by two","category":"code"}
+{"input":"temperature is hot","output":"wear light clothes","category":"reasoning"}
+{"input":"temperature is cold","output":"wear warm clothes","category":"reasoning"}
+{"input":"it is raining","output":"take an umbrella","category":"reasoning"}
+{"input":"it is sunny","output":"wear sunglasses","category":"reasoning"}
+{"input":"it is snowing","output":"wear a coat","category":"reasoning"}
+{"input":"you are hungry","output":"eat food","category":"reasoning"}
+{"input":"you are thirsty","output":"drink water","category":"reasoning"}
+{"input":"you are tired","output":"sleep","category":"reasoning"}
+{"input":"you are sick","output":"see a doctor","category":"reasoning"}
+{"input":"you have a test","output":"study hard","category":"reasoning"}
+{"input":"English to Spanish hello","output":"hola","category":"translation"}
+{"input":"English to Spanish goodbye","output":"adios","category":"translation"}
+{"input":"English to Spanish thank you","output":"gracias","category":"translation"}
+{"input":"English to Spanish please","output":"por favor","category":"translation"}
+{"input":"English to Spanish yes","output":"si","category":"translation"}
+{"input":"English to Spanish no","output":"no","category":"translation"}
+{"input":"English to Spanish good morning","output":"buenos dias","category":"translation"}
+{"input":"English to Spanish good night","output":"buenas noches","category":"translation"}
+{"input":"English to Spanish friend","output":"amigo","category":"translation"}
+{"input":"English to Spanish water","output":"agua","category":"translation"}
+{"input":"English to French hello","output":"bonjour","category":"translation"}
+{"input":"English to French goodbye","output":"au revoir","category":"translation"}
+{"input":"English to French thank you","output":"merci","category":"translation"}
+{"input":"English to French yes","output":"oui","category":"translation"}
+{"input":"English to French no","output":"non","category":"translation"}
+{"input":"I like to learn","output":"learning is fun","category":"essay"}
+{"input":"The best time to study","output":"is in the morning","category":"essay"}
+{"input":"Reading books helps","output":"improve knowledge","category":"essay"}
+{"input":"Practice makes","output":"perfect","category":"essay"}
+{"input":"Hard work leads to","output":"success","category":"essay"}
+{"input":"Knowledge is","output":"power","category":"essay"}
+{"input":"Time is","output":"precious","category":"essay"}
+{"input":"Health is","output":"wealth","category":"essay"}
+{"input":"Unity is","output":"strength","category":"essay"}
+{"input":"Honesty is the best","output":"policy","category":"essay"}
+{"input":"the cat sat on the mat","output":"the dog ran in the park","category":"poem"}
+{"input":"rain rain go away","output":"come again another day","category":"poem"}
+{"input":"twinkle twinkle little star","output":"how I wonder what you are","category":"poem"}
+{"input":"row row row your boat","output":"gently down the stream","category":"poem"}
+{"input":"humpty dumpty sat on a wall","output":"humpty dumpty had a great fall","category":"poem"}
+{"input":"jack and jill went up the hill","output":"to fetch a pail of water","category":"poem"}
