@@ -322,6 +322,17 @@ impl NovaModelManager {
         Ok((loom, HashMap::new()))
     }
 
+    pub fn delete_model(&self, name: &str) -> Result<(), String> {
+        let filepath = self.models_dir.join(format!("{}.nova", name));
+        if filepath.exists() {
+            std::fs::remove_file(&filepath)
+                .map_err(|e| format!("Failed to delete model: {}", e))?;
+            Ok(())
+        } else {
+            Err(format!("Model '{}' not found", name))
+        }
+    }
+
     pub fn list_models(&self) {
         println!("\n{}", "═".repeat(60));
         println!("📦 AVAILABLE MODELS");
