@@ -424,14 +424,15 @@ impl NovaEmbedding {
             logits[token_id] = (dot / (norm * t_norm)) * 10.0;
         }
         
-        // Also compute for <EOS> (token 2) so generation can stop
+        // Also compute for <EOS> (token 2) with REDUCED scaling
+        // so it doesn't dominate generation
         let eos_start = 2 * dim;
-        let eos_norm = 1.0;
         let mut eos_dot = 0.0f32;
         for i in 0..pulse_len {
             eos_dot += pulse_content[i] * self.token_embeddings[eos_start + i];
         }
-        logits[2] = (eos_dot / (norm * eos_norm)) * 10.0;
+        // EOS gets lower logit so model generates more before stopping
+        logits[2] = (eos_dot / norm) * 2.0;
         
         logits
     }

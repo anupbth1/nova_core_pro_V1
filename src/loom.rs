@@ -80,43 +80,38 @@ impl NovaLoom {
             return input.to_string();
         }
         // input_ids = [BOS, ...word_ids..., EOS]
-        // For generation, we use all tokens from BOS to before EOS
         let context = &input_ids[..input_ids.len() - 1]; // exclude EOS
         
         let mut output = input.to_string();
-        let mut current_id = *context.last().unwrap_or(&3); // start from last input token
+        let mut current_id = *context.last().unwrap_or(&3);
+        let input_len = input.split_whitespace().count(); // count input words
         
         for step in 0..max_tokens {
-            // Get embedding for current token (same path as training)
             let pulse = self.embedding.get_embedding(current_id, step);
-            
-            // Compute logits and sample
             let logits = self.embedding.compute_logits_full(&pulse);
             let sampled_id = self.sample_token(&logits);
             
-            // Decode
             let token_str = if sampled_id < self.embedding.id_to_token.len() {
                 self.embedding.id_to_token[sampled_id].clone()
-            } else {
-                String::new()
-            };
+            } else { String::new() };
             
             // Stop conditions
             if token_str == "<EOS>" || sampled_id == 2 { break; }
             if token_str.is_empty() || token_str.starts_with('<') { break; }
-            if token_str == output { break; } // prevent infinite repeat
             
-            // Add space before new word
+            // Check if we've generated this exact word within last 3
+            if step > input_len && output.contains(&format!(" {} ", token_str)) { break; }
+            if step > input_len && output.ends_with(&token_str) { break; }
+            
+            // Add space
             if !output.ends_with(' ') && !token_str.is_empty() &&
                token_str.chars().all(|c| c.is_alphanumeric()) &&
                output.chars().last().map(|c| c.is_alphanumeric()).unwrap_or(false) {
                 output.push(' ');
             }
             output.push_str(&token_str);
-            
             current_id = sampled_id;
         }
-        
         output
     }
 

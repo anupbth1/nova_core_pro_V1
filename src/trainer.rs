@@ -170,29 +170,34 @@ impl NovaTrainer {
             self.register_all_parameters();
         }
 
-        let batch_size = texts.len().min(self.config.batch_size);
+        let bs = self.config.batch_size;
         let mut total_loss = 0.0f32;
         let mut batch_count = 0usize;
 
-        // Zero gradients before batch
-        self.optimizer.zero_grad();
-
-        for text in texts.iter().take(batch_size) {
-            let (loss, _) = self.forward(text);
-            total_loss += loss;
-            batch_count += 1;
+        // Process ALL texts in mini-batches
+        for chunk in texts.chunks(bs) {
+            self.optimizer.zero_grad();
+            let mut chunk_loss = 0.0f32;
+            let mut chunk_count = 0usize;
+            
+            for text in chunk.iter() {
+                let (loss, _) = self.forward(text);
+                chunk_loss += loss;
+                chunk_count += 1;
+            }
+            
+            if chunk_count > 0 {
+                // Step optimizer to apply gradients for this mini-batch
+                self.optimizer.grad_clip = self.config.grad_clip;
+                self.optimizer.step();
+                self.global_step += 1;
+                total_loss += chunk_loss / chunk_count as f32;
+                batch_count += 1;
+            }
         }
 
         let avg_loss = if batch_count > 0 { total_loss / batch_count as f32 } else { 0.0 };
         self.total_loss = avg_loss;
-
-        // APPLY GRADIENTS: backprop + optimizer step
-        // The forward function stores gradients in the optimizer's parameter gradients.
-        // Now we step the optimizer to update weights.
-        self.optimizer.grad_clip = self.config.grad_clip;
-        self.optimizer.step();
-
-        self.global_step += 1;
         avg_loss
     }
 
