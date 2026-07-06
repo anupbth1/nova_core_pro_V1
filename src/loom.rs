@@ -72,92 +72,51 @@ impl NovaLoom {
         }
     }
 
-    /// Direct generation without trainer wrapper
+    /// Direct generation: uses raw embedding similarity (bypasses SSM).
+    /// Predicts one token at a time from the last generated token.
     fn direct_generate(&mut self, input: &str, max_tokens: usize) -> String {
-        // Tokenize input
         let input_ids = self.embedding.tokenize(input);
         if input_ids.len() < 2 {
             return input.to_string();
         }
-
-        // Get input tokens (exclude last for autoregressive)
-        let input_tokens = &input_ids[..input_ids.len().saturating_sub(1)];
-        let embeddings = self.embedding.get_embeddings(input_tokens);
-
-        // Create pulses
-        let mut pulses: Vec<NovaPulse> = embeddings.iter().enumerate()
-            .map(|(pos, emb)| NovaPulse::from_embedding(emb, pos))
-            .collect();
-
-        // Reset states
-        for core in self.cores.iter_mut() {
-            core.reset_ssm();
-        }
-        self.field.reset();
-
-        // Send cross-core messages
-        self.exchange_core_messages();
-
-        // Process input through cores
-        for core in self.cores.iter_mut() {
-            core.process(&mut pulses);
-        }
-
-        // Update field
-        let core_states: Vec<Vec<f32>> = self.cores.iter()
-            .map(|c| c.internal_state.clone())
-            .collect();
-        let core_gates: Vec<f32> = self.cores.iter().map(|c| c.gate).collect();
-        self.field.process_core_outputs(&core_states, &core_gates);
-
-        // Start generating
+        // input_ids = [BOS, ...word_ids..., EOS]
+        // For generation, we use all tokens from BOS to before EOS
+        let context = &input_ids[..input_ids.len() - 1]; // exclude EOS
+        
         let mut output = input.to_string();
-        let mut last_pulse = pulses.last().cloned()
-            .unwrap_or(NovaPulse::zeros(EMBED_DIM, 0));
-
+        let mut current_id = *context.last().unwrap_or(&3); // start from last input token
+        
         for step in 0..max_tokens {
-            // Process single pulse through cores
-            let mut single_pulse = vec![last_pulse.clone()];
-
-            // Exchange messages for cross-core collaboration
-            self.exchange_core_messages();
-
-            for core in self.cores.iter_mut() {
-                core.process(&mut single_pulse);
-            }
-
-            let processed = &single_pulse[0];
-
+            // Get embedding for current token (same path as training)
+            let pulse = self.embedding.get_embedding(current_id, step);
+            
             // Compute logits and sample
-            // Use FULL logits for better generation quality (all tokens computed)
-            let logits = self.embedding.compute_logits_full(&processed.content);
+            let logits = self.embedding.compute_logits_full(&pulse);
             let sampled_id = self.sample_token(&logits);
-
-            // Decode token
+            
+            // Decode
             let token_str = if sampled_id < self.embedding.id_to_token.len() {
                 self.embedding.id_to_token[sampled_id].clone()
             } else {
                 String::new()
             };
-
-            if token_str == "<EOS>" || token_str == "<PAD>" || token_str.starts_with("<VOCAB") {
-                continue;
-            }
-            if token_str.starts_with('<') && token_str.ends_with('>') {
-                continue;
-            }
-
-            if !output.ends_with(' ') && !output.ends_with('\n') &&
-               token_str.chars().all(|c| c.is_alphanumeric()) {
+            
+            // Stop conditions
+            if token_str == "<EOS>" || sampled_id == 2 { break; }
+            if token_str.is_empty() || token_str.starts_with('<') { break; }
+            if token_str == output { break; } // prevent infinite repeat
+            
+            // Add space before new word
+            if !output.ends_with(' ') && !token_str.is_empty() &&
+               token_str.chars().all(|c| c.is_alphanumeric()) &&
+               output.chars().last().map(|c| c.is_alphanumeric()).unwrap_or(false) {
                 output.push(' ');
             }
             output.push_str(&token_str);
-
-            // Create next pulse
-            let next_embedding = self.embedding.get_embedding(sampled_id, step);
-            last_pulse = NovaPulse::from_embedding(&next_embedding, step + 1);
+            
+            current_id = sampled_id;
         }
-
+        
         output
     }
 

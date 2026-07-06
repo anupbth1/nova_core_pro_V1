@@ -37,6 +37,8 @@ pub struct NovaEmbedding {
     pub token_norms: Vec<f32>,
     /// Partition-based search index: which token IDs are "real" (not padding/special)
     pub real_token_ids: Vec<usize>,
+    /// The ACTUAL embedding dimension (may differ from compile-time EMBED_DIM)
+    pub actual_dim: usize,
 }
 
 impl NovaEmbedding {
@@ -176,6 +178,7 @@ impl NovaEmbedding {
             }
         }
 
+        let actual_dim = embed_dim;
         NovaEmbedding {
             token_embeddings,
             positional_encoding,
@@ -184,6 +187,7 @@ impl NovaEmbedding {
             initialized: false,
             token_norms,
             real_token_ids,
+            actual_dim,
         }
     }
 
@@ -400,17 +404,17 @@ impl NovaEmbedding {
     }
 
     /// Full logits computation for ALL vocabulary (slow but exact).
-    /// Used during training loss computation where accuracy matters.
-    /// Uses the ACTUAL embedding dimension from the stored table, not compile-time EMBED_DIM.
+    /// Placeholder tokens (<VOCAB_N>) get very low scores to prevent garbage output.
     pub fn compute_logits_full(&self, pulse_content: &[f32]) -> Vec<f32> {
         if self.token_embeddings.is_empty() || VOCAB_SIZE == 0 { return vec![0.0; VOCAB_SIZE]; }
         let dim = self.token_embeddings.len() / VOCAB_SIZE;
         if dim == 0 { return vec![0.0; VOCAB_SIZE]; }
         let norm: f32 = pulse_content.iter().map(|&x| x * x).sum::<f32>().sqrt().max(1e-8);
-        let mut logits = vec![0.0; VOCAB_SIZE];
+        let mut logits = vec![-100.0; VOCAB_SIZE]; // Start low
         let pulse_len = pulse_content.len().min(dim);
         
-        for token_id in 0..VOCAB_SIZE {
+        // Only compute for REAL tokens (English words, punctuation, characters)
+        for &token_id in &self.real_token_ids {
             let start = token_id * dim;
             let t_norm = self.token_norms[token_id];
             let mut dot = 0.0f32;
@@ -419,6 +423,16 @@ impl NovaEmbedding {
             }
             logits[token_id] = (dot / (norm * t_norm)) * 10.0;
         }
+        
+        // Also compute for <EOS> (token 2) so generation can stop
+        let eos_start = 2 * dim;
+        let eos_norm = 1.0;
+        let mut eos_dot = 0.0f32;
+        for i in 0..pulse_len {
+            eos_dot += pulse_content[i] * self.token_embeddings[eos_start + i];
+        }
+        logits[2] = (eos_dot / (norm * eos_norm)) * 10.0;
+        
         logits
     }
 
